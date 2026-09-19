@@ -4,8 +4,9 @@
 **Branch**: `develop`
 **Built**: 2026-09-19
 **ZIP**: `dorm-power-monitor-r68.zip`
-**ZIP SHA256**: _filled-by-build-script_
-**Bundle size**: 80 files (R51c: 36 → R68: 80)
+**ZIP SHA256**: `4ebe51faaf7651afd3e101ee72fad488ca2d354ca070007d5ced91eb3d504bf8`
+**ZIP size**: 30,354,754 bytes (29.0 MB compressed, 34.1 MB uncompressed across 80 files)
+**Bundle**: 80 files (R51c: 36 → R68: 80)
 
 This release bundles the complete R60-R67 deliverable stack on top of
 the R51c baseline. It replaces the production server's R51c build
