@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: AST guard
+        run: |
+          python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('*.py') + __import__('glob').glob('tests/modern/*.py')]"
+
+      - name: py_compile
+        run: python -m py_compile config.py db.py web.py feishu_bot.py
+
+      - name: secret scan
+        run: |
+          ! grep -rEn 'FEISHU_APP_SECRET=[^<]|[A-Za-z0-9]{32,}' --include='*.py' --include='*.md' .

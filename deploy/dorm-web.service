@@ -1,0 +1,45 @@
+[Unit]
+Description=Dorm power monitor (Flask dashboard)
+After=network.target
+
+[Service]
+Type=simple
+# `www-data` is the conventional nginx user on Debian/Ubuntu.  If you
+# run a dedicated user instead, change this and the `ReadWritePaths=`
+# entry below.  Use `User=root` ONLY as a last resort and document the
+# reason -- the hardening directives below lose most of their value
+# under root.
+User=www-data
+Group=www-data
+
+WorkingDirectory=/opt/dorm-power-monitor
+EnvironmentFile=-/opt/dorm-power-monitor/.env
+ExecStart=/opt/dorm-power-monitor/.venv/bin/python /opt/dorm-power-monitor/web.py
+
+Restart=always
+RestartSec=5
+
+# --- hardening (per systemd.exec(5)) ---------------------------------
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# MemoryDenyWriteExecute=true is intentionally OFF: some Python C
+# extensions (numpy, lxml, ...) generate code at runtime and crash
+# under MDE.  Leave it off unless you've audited the dependency tree.
+SystemCallArchitectures=native
+ReadWritePaths=/opt/dorm-power-monitor /var/lib/dorm-power-monitor
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+flask>=3.0
+gunicorn>=21.0
+requests>=2.31
+pycryptodome>=3.18
+pillow>=10.0
+python-dotenv>=1.0
+# Round 34D — dropped beautifulsoup4 (Round 21 L3 dead-dep audit).
+#   The scraper parses portal responses with stdlib ``html.parser`` via
+#   ``BeautifulSoup(..., 'html.parser')`` only when BS4 was present,
+#   but every code path was migrated to regex / lxml-free parsing in
+#   Round 21.  No code anywhere in the repo still imports bs4; verify
+#   with:  grep -r "from bs4\|import bs4" dorm-power-monitor/

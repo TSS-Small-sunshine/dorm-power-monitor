@@ -1,0 +1,23 @@
+# Crontab lines for the dorm electricity scraper (Round 34A — two entries).
+#
+# Install for the service user (matches the User= in dorm-web.service):
+#   sudo crontab -u www-data -e
+# then paste the two lines below at the end of the file.
+#
+# ── Entry 1: */10 scrape + L1/L2 push (existing) ────────────────────────
+# Default schedule runs every 10 minutes.  Adjust the minute/hour
+# fields to taste.  If you change the interval, also update
+# SCRAPE_INTERVAL_MINUTES in /opt/dorm-power-monitor/.env so the
+# "采集间隔" label in the Feishu card stays in sync.
+#
+# ── Entry 2: * * * * * L3 cadence gate (new — Round 34A) ───────────────
+# Fires every minute so the daily / weekly / monthly push lands on
+# its scheduled Beijing-time HH:MM.  The --tick mode does NOT scrape
+# the school; it only checks the per-kind enable flag + push time +
+# last-stamp meta and pushes the long-form L3 card when due.  A
+# separate flock lock file (dorm-tick.lock) keeps the two crons from
+# colliding on shared state — they can run in parallel.
+#
+# m h  dom mon dow   command
+*/10 * * * * flock -n /var/lock/dorm-scrape.lock /opt/dorm-power-monitor/.venv/bin/python /opt/dorm-power-monitor/dorm_power.py        >> /var/log/dorm-power-monitor.log      2>&1
+*   * * * * flock -n /var/lock/dorm-tick.lock   /opt/dorm-power-monitor/.venv/bin/python /opt/dorm-power-monitor/dorm_power.py --tick >> /var/log/dorm-power-monitor-tick.log 2>&1

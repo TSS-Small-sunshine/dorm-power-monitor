@@ -1,0 +1,25 @@
+# Round 34D — logrotate config for dorm-power-monitor
+#
+# Install:    sudo cp deploy/dorm-power-monitor.logrotate /etc/logrotate.d/
+# Test (dry): sudo logrotate -d /etc/logrotate.d/dorm-power-monitor.logrotate
+# Force run:  sudo logrotate -f /etc/logrotate.d/dorm-power-monitor.logrotate
+#
+# Covers both the legacy /var/log location (the systemd unit writes
+# here) and the project-tree /opt/dorm-power-monitor location (cron
+# writes here when invoked manually).  ``missingok`` tolerates missing
+# files on rotation day (e.g. before the first cron tick).
+
+/opt/dorm-power-monitor/dorm.log
+/opt/dorm-power-monitor/dorm-tick.log
+/var/log/dorm-power-monitor.log
+/var/log/dorm-power-monitor-tick.log
+{
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    sharedscripts
+}
