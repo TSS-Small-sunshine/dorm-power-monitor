@@ -1,17 +1,18 @@
 # 宿舍电量监控 (Dorm Power Monitor)
 
 [![CI](https://github.com/TSS-Small-sunshine/dorm-power-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/TSS-Small-sunshine/dorm-power-monitor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/TSS-Small-sunshine/dorm-power-monitor?include_prereleases)](https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases)
 
-> **Round 51c — baseline (2026-09-19)**  
-> **Branch state**: `main` 已锁定 R51c baseline；R60+ 后续开发在 `develop` 分支推进  
-> **Release**: [`v1.0.0-r51c-baseline`](https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases/tag/v1.0.0-r51c-baseline)  
-> **R51c reference SHA256**: `AD73D661D256E2FC1A7513ED1C9D031E30499E169CF1BFC40B9ED83941E5B86F`
+> **Round 68 — R60-R67 bundle (2026-09-19)** ← **current**
+> **Branch state**: `main` 锁定 R51c baseline；`develop` 是 R60-R68 的活跃开发分支
+> **Release**: [`v1.1.0-r68`](https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases/tag/v1.1.0-r68)
+> **Previous**: [`v1.0.0-r51c-baseline`](https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases/tag/v1.0.0-r51c-baseline)
 >
 > 福建省某高校宿舍电量实时监控 + Feishu 机器人推送 + 美观 Web 仪表盘
 >
 > 一个自托管、可二次开发的项目，专为不习惯"商业电费 SaaS"的中国高校师生设计。
 >
-> **Round 路线图**：R51c baseline → R60 (GitHub 初始化) → R61-R67 (develop branch)
+> **Round 路线图**：R51c baseline → R60 (GitHub) → R61-R67 (develop) → R68 (bundle)
 
 ---
 
@@ -36,6 +37,117 @@ dorm-power-monitor/
 ```
 
 > **R44 变更**：零散测试文件归档到 `tests/{modern,legacy}/`，文档归档到 `docs/`，构建/部署脚本归档到 `scripts/{build,deploy}/`。生产代码、README、LICENSE、配置/资源目录位置不动。`docs/TECHNICAL.md` 现已纳入 zip。
+
+---
+
+## 🆕 R60-R68 — 重大更新（2026-09）
+
+> 这是从 R51c 升级到 R60-R67 bundle 的 release。完整变更日志看
+> [`R68_RELEASE_NOTES.md`](./R68_RELEASE_NOTES.md) 和
+> [`AGENTS.md`](./AGENTS.md)。
+
+### R60 — GitHub 仓库 + CI
+
+- 仓库 [TSS-Small-sunshine/dorm-power-monitor](https://github.com/TSS-Small-sunshine/dorm-power-monitor) 公开
+- `main` = R51c baseline（已锁），`develop` = R60-R67 活跃开发
+- CI workflow: AST guard + py_compile + secret scan，每次 push / PR 到 `main` / `develop` 触发
+- `v1.0.0-r51c-baseline` 标记 R51c 为稳定 release
+
+### R61 — 数据层 Pydantic 化
+
+- `db.py` (~700 行) 拆成 `db/` 包：`__init__.py` + `_legacy.py`（保留向后兼容）+ `models.py`（Pydantic v2 实体）+ `repo.py`（Repository 包装）
+- `db.py` 自身退化为 60 行 shim，所有 `import db; db.insert(...)` 老调用照常工作
+- 新增依赖：`pydantic>=2.0,<3.0`
+
+### R62 — web.py 拆分 templates/ + static/
+
+- 全部 inline HTML / CSS / JS 抽出到 `templates/`（8 个 Jinja 模板）、`static/css/`（4 份样式表）、`static/js/`（8 个页面脚本）
+- `web.py` 用 `render_template()` + `url_for('static', ...)` 取代字符串拼接
+- 字体文件从 `assets/fonts/` 镜像到 `static/fonts/`（R66 浏览器端 `@font-face` 需要）
+
+### R63 — auth 模块 + bcrypt + session + 失败锁定
+
+- 新模块 `auth.py`（968 行）：
+  - `users` 表 + bcrypt(rounds=12) 密码散列
+  - 服务端 session 表 + `HttpOnly` / `SameSite=Lax` cookie
+  - 5 次失败 / 15 分钟锁定
+  - 审计日志表（不可篡改格式）
+- 旧 HTTP Basic Auth 完全删除
+
+### R64 — admin 5 页面 + CSRF + Login UI
+
+- `templates/login.html` + `static/{css,js}/login.*` — 独立登录页
+- 4 个新 admin 页：`admin_users.html` / `admin_config.html` / `admin_test.html` / `admin_audit.html`
+- 每个 admin POST 端点都校验 CSRF token（session 级 `secrets.token_urlsafe(32)`）
+
+### R65 — OOBE 6 步首启向导
+
+- 首次 deploy 后访问 `/` 自动重定向到 `/oobe`
+- 6 步：欢迎 → 用户名 → 密码（含强度计）→ 主题色 → 服务器健康检查 → 完成
+- OOBE 状态存在 `meta.oobe_step` + `meta.oobe_completed`
+
+### R66 — 8 个 Web Components + View Transitions
+
+- `static/js/components/dorm-*.js`：stat-card / room-card / list-row / history-row / records-table / chart-container / spinner / toast
+- 全部基于 Web Components API（customElements），零依赖
+- 路由切换用 `document.startViewTransition()`，浏览器不支持时优雅降级
+
+### R67 — 多端适配响应式
+
+- 移动端优先，3 个断点（≤480 / 481–1024 / ≥1025）
+- Container queries 让组件在窄容器内自动重排
+- 触控目标 ≥ 44px，尊重 `prefers-reduced-motion`
+
+### R68 — 打 zip + 部署脚本（本 release 的核心）
+
+- 打包 80 个文件 → `dorm-power-monitor-r68.zip` + `.sha256` sidecar
+- 一键 deploy 脚本：`scripts/deploy/deploy_round68.sh`
+- `.env` 升级指南：`scripts/deploy/r68_env_migration.md`
+
+### 🚀 怎么部署 R68
+
+```bash
+# 1. 把 zip + sha256 传到服务端
+scp dorm-power-monitor-r68.zip dorm-power-monitor-r68.zip.sha256 \
+    user@<server>:/tmp/
+
+# 2. (可选) 在服务端生成 FLASK_SECRET_KEY 并写到 /opt/dorm-power-monitor/.env
+ssh user@<server>
+sudo bash -c 'echo "FLASK_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")" \
+    >> /opt/dorm-power-monitor/.env'
+# 详细 .env 升级看 scripts/deploy/r68_env_migration.md
+
+# 3. 跑一键 deploy 脚本
+sudo bash /opt/dorm-power-monitor/scripts/deploy/deploy_round68.sh
+#    (脚本会从 .env 读 ZIP_PATH / SHA_PATH,默认 /tmp/dorm-r68.zip)
+
+# 4. 浏览器 hard-refresh,走 OOBE
+#    http://school.tssplus.top/  →  自动跳 /oobe  →  6 步 →  /admin
+```
+
+### 📋 Post-deploy checklist
+
+- [ ] 浏览器打开 `http://<your-domain>/` → 自动跳到 `/oobe`
+- [ ] OOBE step 1: Welcome 页面（确认服务新代码）
+- [ ] OOBE step 2: 选管理员用户名
+- [ ] OOBE step 3: 输密码 + 确认（强度计 ≥ 中等）
+- [ ] OOBE step 4: 选 4 种主题色之一
+- [ ] OOBE step 5: 健康检查页（确认 scrape 时间 < 10 分钟）
+- [ ] OOBE step 6: Done → 自动跳 `/login`
+- [ ] 用刚建的 admin 登录 → `/admin` 看到 5 个 tab
+- [ ] 服务端删 `AUTH_INITIAL_ADMIN_PASSWORD` 这一行
+- [ ] `journalctl -u dorm-power-monitor-web -n 50` 没有 ERROR
+- [ ] 备份确认：`/opt/dorm-power-monitor-backups/dorm-power-monitor-r51c-<时间戳>/` 存在
+
+### ↩️ Rollback
+
+```bash
+# deploy 脚本自动备份到 /opt/dorm-power-monitor-backups/dorm-power-monitor-r51c-<时间戳>
+sudo systemctl stop dorm-power-monitor-web
+sudo rsync -av /opt/dorm-power-monitor-backups/dorm-power-monitor-r51c-*/ /opt/dorm-power-monitor/
+sudo systemctl start dorm-power-monitor-web
+# 完整 rollback 手册: R68_RELEASE_NOTES.md → "Rollback" 章节
+```
 
 ---
 
