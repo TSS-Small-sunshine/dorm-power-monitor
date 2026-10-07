@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'rewrite/**']
   pull_request:
     branches: [main, develop]
 
@@ -16,13 +16,24 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: AST guard
+      - name: Install dev deps
         run: |
-          python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('*.py') + __import__('glob').glob('tests/modern/*.py')]"
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
-      - name: py_compile
-        run: python -m py_compile config.py db.py web.py feishu_bot.py
+      - name: Ruff
+        run: python -m ruff check .
 
-      - name: secret scan
+      - name: AST guard (R1-R7)
+        run: python -m scripts.ast_guard
+
+      - name: Pytest
+        run: python -m pytest -q
+
+      - name: Compile all python
+        run: python -m compileall -q -x '(\.venv|__pycache__|\.git|node_modules)' .
+
+      - name: Secret scan
         run: |
-          ! grep -rEn 'FEISHU_APP_SECRET=[^<]|[A-Za-z0-9]{32,}' --include='*.py' --include='*.md' .
+          ! grep -rEn 'FEISHU_APP_SECRET=[^<]|[A-Za-z0-9]{32,}' \
+              --include='*.py' --include='*.md' --include='*.yml' .

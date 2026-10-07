@@ -341,10 +341,11 @@ def _offline():
 
 
 def snap_behaviors() -> dict:
-    import db
     import dorm_power
     import feishu_bot
     import web
+
+    import db
 
     out: dict = {}
 
