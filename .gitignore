@@ -31,3 +31,9 @@ build/
 .env
 .env.local
 .github_pat
+# Runtime data (never commit)
+records.db
+*.db-wal
+*.db-shm
+*.db-journal
+tests/**/records.db
