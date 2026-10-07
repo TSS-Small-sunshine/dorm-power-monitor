@@ -1,4 +1,4 @@
-# 重写方案（REWRITE PLAN）
+﻿# 重写方案（REWRITE PLAN）
 
 > **状态**：草案 v5（待评审）
 > **需求基线**：`REQUIREMENTS.md` v1.4（**22 项决策** + 3 项修复决策 D1/D2/D3）
@@ -87,7 +87,7 @@
 | 9 | `install.sh` | ★ 新增（替代 `setup.sh`） |
 | 10 | `.env.example` | **重写**（只留 4 项启动必需） |
 | 11 | `web.py` | ★ **新内容**（≤15 行 gunicorn 入口） |
-| 12 | `app/` | ★ 全新 |
+| 12 | `starwatt/` | ★ 全新 |
 | 13 | `frontend/` | ★ 全新 |
 | 14 | `tests/` | ★ 全新（含 fixtures） |
 | 15 | `static/fonts/` | **去重后一份**（3 个 TTF，17.3MB） |
@@ -129,7 +129,7 @@
 | 类别 | 文件数 |
 |---|---|
 | 根目录配置 | 11（pyproject / requirements×2 / Dockerfile / compose / .dockerignore / install.sh / web.py / .env.example / .gitignore / LICENSE） |
-| `app/` | ~35 |
+| `starwatt/` | ~35 |
 | `frontend/` | ~30 |
 | `tests/` | ~15 |
 | `static/` | 4（3 字体 + vendor Chart.js） |
@@ -146,22 +146,22 @@
 
 ```
 Layer 5  entry      web.py / scheduler.py                  ← ★ 新入口（≤15 行，非兼容 shim）
-Layer 4  web        app/web/                               ← HTTP 适配层（Flask 蓝图）
-Layer 3  service    app/services/                          ← 用例编排
-Layer 2  domain     app/domain/                            ← 纯计算，零 IO
-         adapter    app/scraper/  app/notify/              ← 外部系统适配
-Layer 1  infra      app/db/  app/auth/  app/config.py      ← 基础设施
+Layer 4  web        starwatt/web/                               ← HTTP 适配层（Flask 蓝图）
+Layer 3  service    starwatt/services/                          ← 用例编排
+Layer 2  domain     starwatt/domain/                            ← 纯计算，零 IO
+         adapter    starwatt/scraper/  starwatt/notify/              ← 外部系统适配
+Layer 1  infra      starwatt/db/  starwatt/auth/  starwatt/config.py      ← 基础设施
 Layer 0  stdlib / 三方库
 ```
 
 | 规则 | 内容 | 校验方式 |
 |---|---|---|
-| R1 | `app/domain/` **禁止** import `requests` / `flask` / `sqlite3` / `app.db` | AST 守卫 |
-| R2 | `app/scraper/` 与 `app/notify/` **禁止**互相 import | AST 守卫 |
-| R3 | `app/web/` 只允许依赖 `app/services/` + `app/auth/` | AST 守卫 |
-| R4 | 任何 `app/**` **禁止** import 顶层 `web` / `dorm_power` / `feishu_bot` | AST 守卫 |
+| R1 | `starwatt/domain/` **禁止** import `requests` / `flask` / `sqlite3` / `starwatt.db` | AST 守卫 |
+| R2 | `starwatt/scraper/` 与 `starwatt/notify/` **禁止**互相 import | AST 守卫 |
+| R3 | `starwatt/web/` 只允许依赖 `starwatt/services/` + `starwatt/auth/` | AST 守卫 |
+| R4 | 任何 `starwatt/**` **禁止** import 顶层 `web` / `dorm_power` / `feishu_bot` | AST 守卫 |
 | R5 | **禁止**跨模块 import 下划线私有符号 | AST 守卫 |
-| R6 | `app/**` 单文件 ≤ 400 行 | ruff `C901` + 自定义脚本 |
+| R6 | `starwatt/**` 单文件 ≤ 400 行 | ruff `C901` + 自定义脚本 |
 | R7 | **禁止**裸用 `datetime.now()` / `date.today()`（Q10） | AST 守卫（🔴 强制） |
 
 ### 1.2 目标目录树
@@ -181,7 +181,7 @@ dorm-power-monitor/
 │   ├── ci.yml                      ◆ 加 pytest + ruff + AST 守卫
 │   └── release.yml                 ★ buildx 三架构构建 + 推 registry + 导出离线包
 │
-├── app/
+├── starwatt/
 │   ├── __init__.py                 create_app 导出
 │   ├── config.py                   ◆ 统一 Settings（.env 只留启动必需项）
 │   ├── timeutil.py                 ★ now_cst() —— 全项目唯一时间源（Q10）
@@ -276,7 +276,7 @@ dorm-power-monitor/
 ### 2.1 时间源（Q10）—— 全项目唯一
 
 ```python
-# app/timeutil.py
+# starwatt/timeutil.py
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -294,8 +294,8 @@ def stamp() -> str:
     return now_cst().strftime("%Y-%m-%d %H:%M:%S")
 ```
 
-**强制**：AST 守卫禁止 `app/**` 出现 `datetime.now()` / `datetime.today()` / `date.today()`。
-**例外**：`app/timeutil.py` 自身。
+**强制**：AST 守卫禁止 `starwatt/**` 出现 `datetime.now()` / `datetime.today()` / `date.today()`。
+**例外**：`starwatt/timeutil.py` 自身。
 
 ### 2.2 调度与服务器启动（Q14 + 修复 B2/B3）
 
@@ -336,7 +336,7 @@ def start_scheduler_once():
 ### 2.3 访问控制（Q11）
 
 ```python
-# app/auth/decorators.py
+# starwatt/auth/decorators.py
 def require_auth(role: str | None = None) -> Callable: ...
 
 def require_read_access(fn):
@@ -375,14 +375,14 @@ POST /api/setup/commit      ← 写入 meta（dorm_openid / last_room_id / eqpri
 |---|---|
 | `dorm_power._post_feishu` | → `notify.transport.post_card`（**唯一**） |
 | `feishu_bot._post_feishu` | → 同上（参数取并集） |
-| `web.py:2238/2882` `from dorm_power import _post_feishu` | → `from app.notify.transport import post_card` |
+| `web.py:2238/2882` `from dorm_power import _post_feishu` | → `from starwatt.notify.transport import post_card` |
 | `_sign` / `_now_beijing` / `_is_due` 在 dorm_power | → `notify.policies` |
 | `_should_push` / `_in_quiet_hours` 在 feishu_bot | → `notify.policies` |
 
 ### 2.6 数据层收口（消除 L3）
 
 ```
-app/db/
+starwatt/db/
   schema.py         _SCHEMA（唯一）+ users.disabled 新列
   connection.py     get_conn / init / WAL / foreign_keys=ON
   models.py         Pydantic v2：Record / DailyElec / Violation / Pay /
@@ -424,7 +424,7 @@ frontend/src/
 **目标**：**每一个**配置项都由注册表声明，WebUI 据此**自动生成表单**，后端据此**自动校验**。
 
 ```python
-# app/config_registry/registry.py
+# starwatt/config_registry/registry.py
 from dataclasses import dataclass
 from enum import Enum
 
@@ -500,7 +500,7 @@ meta 表（运行时配置，全部可在 UI 改）
 ### 2.9 功能开关体系（Q16）
 
 ```python
-# app/flags.py
+# starwatt/flags.py
 FLAGS: dict[str, str] = {
     "push_group_enabled":     "群推送总开关",
     "push_bot_enabled":       "私聊机器人总开关",
@@ -539,7 +539,7 @@ def is_enabled(flag: str) -> bool:
 ### 2.10 日志子系统（Q20）
 
 ```python
-# app/logging_setup.py
+# starwatt/logging_setup.py
 TRACE, NOTICE = 5, 25           # 自定义级别
 logging.addLevelName(TRACE, "TRACE")
 logging.addLevelName(NOTICE, "NOTICE")
@@ -583,7 +583,7 @@ def setup_logging(cfg) -> None:
 ### 2.12 扩展点协议（Q18）
 
 ```python
-# app/protocols.py
+# starwatt/protocols.py
 class Notifier(Protocol):
     name: str
     def enabled(self) -> bool: ...
@@ -721,15 +721,15 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 | 步 | 内容 |
 |---|---|
-| 1.1 | `app/timeutil.py`（Q10）+ AST 守卫 |
-| 1.2 | `app/config.py` 统一 Settings（`.env` 只留启动必需 4 项） |
-| 1.3 | `app/db/` **五文件**（schema / connection / **migrations** / models / repositories） |
-| 1.4 | `app/auth/` 拆分 + **`password.py`（stdlib scrypt，替代 bcrypt）** + `sessions` 存哈希 + `users.disabled` + `users.must_change_password` |
-| 1.5 | **`app/config_registry/` 五文件**（Q15）：registry（含 **`kind` 三类划分**）/ store / crypto / validate / portable |
-| 1.6 | **`app/flags.py`**（Q16）：17 个开关注册 + `is_enabled()` |
-| 1.7 | **`app/logging_setup.py`**（Q20）：7 级 + 类别 + 模块级覆盖 + 文本/JSON |
-| 1.8 | **`app/protocols.py`**（Q18）：`Notifier` / `Endpoint` 协议 |
-| 1.9 | 单元测试：`app/domain/` 100% 覆盖 + config_registry 全分支 |
+| 1.1 | `starwatt/timeutil.py`（Q10）+ AST 守卫 |
+| 1.2 | `starwatt/config.py` 统一 Settings（`.env` 只留启动必需 4 项） |
+| 1.3 | `starwatt/db/` **五文件**（schema / connection / **migrations** / models / repositories） |
+| 1.4 | `starwatt/auth/` 拆分 + **`password.py`（stdlib scrypt，替代 bcrypt）** + `sessions` 存哈希 + `users.disabled` + `users.must_change_password` |
+| 1.5 | **`starwatt/config_registry/` 五文件**（Q15）：registry（含 **`kind` 三类划分**）/ store / crypto / validate / portable |
+| 1.6 | **`starwatt/flags.py`**（Q16）：17 个开关注册 + `is_enabled()` |
+| 1.7 | **`starwatt/logging_setup.py`**（Q20）：7 级 + 类别 + 模块级覆盖 + 文本/JSON |
+| 1.8 | **`starwatt/protocols.py`**（Q18）：`Notifier` / `Endpoint` 协议 |
+| 1.9 | 单元测试：`starwatt/domain/` 100% 覆盖 + config_registry 全分支 |
 
 **验收**：现有 `records.db` 直接可用；schema 快照通过；**所有现有配置项已迁入注册表且可从 store 读到**
 **回滚**：`git revert`（纯新增 + 搬迁）
@@ -740,15 +740,15 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 | 步 | 内容 |
 |---|---|
-| 2.1 | `app/scraper/{client,endpoints,backfill,service}.py`（实现 `Endpoint` 协议） |
-| 2.2 | `app/scheduler.py`（Q14）+ **`post_fork` 启动时机设计**（审计 B3） |
+| 2.1 | `starwatt/scraper/{client,endpoints,backfill,service}.py`（实现 `Endpoint` 协议） |
+| 2.2 | `starwatt/scheduler.py`（Q14）+ **`post_fork` 启动时机设计**（审计 B3） |
 | 2.3 | **新建 `web.py`** 为 gunicorn 入口（`web:app` + `create_app()` + `logging_setup()` + 单 worker 断言） |
 | 2.4 | **更新 `deploy/dorm-web.service`**：`ExecStart` 改为 gunicorn（审计 B2） |
 
 **验收**：`gunicorn web:app` 启动成功；调度器**只启动一次**（日志验证）；`records` 表新增行
 **回滚**：`git revert`
 
-> **Q22 影响**：原方案里"`dorm_power.py` 改为兼容 shim"这一步**已删除** —— 该文件在新分支不存在，抓取能力由 `app/scraper/` 全新实现。
+> **Q22 影响**：原方案里"`dorm_power.py` 改为兼容 shim"这一步**已删除** —— 该文件在新分支不存在，抓取能力由 `starwatt/scraper/` 全新实现。
 
 ---
 
@@ -756,7 +756,7 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 | 步 | 内容 |
 |---|---|
-| 3.1 | `app/notify/{crypto,transport,card_builder,renderer,policies,dispatcher}.py` |
+| 3.1 | `starwatt/notify/{crypto,transport,card_builder,renderer,policies,dispatcher}.py` |
 | 3.2 | 验证**无跨模块私有调用**（AST 守卫 R5） |
 | 3.3 | 字体目录去重（`assets/fonts/` 删除，只留 `static/fonts/`） |
 
@@ -771,8 +771,8 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 | 步 | 内容 |
 |---|---|
-| 4.1 | `app/services/` 四个 service |
-| 4.2 | `app/web/` 7 个蓝图（dashboard / admin / oobe / setup / auth_api / feishu / health） |
+| 4.1 | `starwatt/services/` 四个 service |
+| 4.2 | `starwatt/web/` 7 个蓝图（dashboard / admin / oobe / setup / auth_api / feishu / health） |
 | 4.3 | 访问控制（Q11）：默认需登录 + `public_readonly` 开关 |
 | 4.4 | **OOBE 收敛为 5 步**（B4/B5）：删除"建号"步；端点 **10 → 2**（`GET /api/oobe/state` + `POST /api/oobe/advance`）；复用配置注册表 → **消除 L6** |
 | 4.5 | 自助配置 API（N4） |
@@ -837,7 +837,7 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 | 层 | 目录 | 目标 | 内容 |
 |---|---|---|---|
 | **契约快照** | `tests/regression/` | 5 类 | 45 项隐性行为 / 卡片 JSON / API 字段集 / 算法向量 / schema |
-| 单元 | `tests/unit/` | ≥ 80 | `app/domain/*`（100% 覆盖）、`db` coercion、`notify/crypto`、`card_builder` |
+| 单元 | `tests/unit/` | ≥ 80 | `starwatt/domain/*`（100% 覆盖）、`db` coercion、`notify/crypto`、`card_builder` |
 | 集成 | `tests/integration/` | ≥ 30 | Flask test client 打全部端点、`run_once` 编排、OOBE 全流程、自助配置 |
 | 归档 | `tests/legacy/` | 41（现状） | 保留只读，**不进 CI** |
 
@@ -845,18 +845,18 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 | 范围 | 目标 |
 |---|---|
-| `app/domain/` | **100%**（强制） |
-| `app/db/` | ≥ 85% |
-| `app/notify/crypto.py` | **100%**（安全敏感） |
-| `app/timeutil.py` | **100%** |
+| `starwatt/domain/` | **100%**（强制） |
+| `starwatt/db/` | ≥ 85% |
+| `starwatt/notify/crypto.py` | **100%**（安全敏感） |
+| `starwatt/timeutil.py` | **100%** |
 | 全仓 | ≥ 70% |
 
 ### 4.3 CI 门禁
 
 ```yaml
 - ruff check .                    # 含 R6 行长规则
-- mypy app/                       # 渐进严格
-- pytest -q --cov=app --cov-fail-under=70
+- mypy starwatt/                       # 渐进严格
+- pytest -q --cov=starwatt --cov-fail-under=70
 - python -m scripts.ast_guard     # R1–R7 分层 + 时区守卫
 - 契约快照 diff（必须为 0）
 - secret scan
@@ -954,7 +954,7 @@ $ curl -fsSL https://<repo>/install.sh | bash
 
 - [ ] `pytest -q` 全绿
 - [ ] `ruff check .` 0 error
-- [ ] `mypy app/` 无新增错误
+- [ ] `mypy starwatt/` 无新增错误
 - [ ] **契约快照 diff = 0**
 - [ ] AST 守卫 R1–R7 通过
 - [ ] `git status --short` 干净
@@ -977,8 +977,8 @@ $ curl -fsSL https://<repo>/install.sh | bash
 - [ ] `.env` 键名与 meta 键名不变
 
 **质量**
-- [ ] `app/domain/` 覆盖率 100%
-- [ ] `app/**` 单文件 ≤ 400 行
+- [ ] `starwatt/domain/` 覆盖率 100%
+- [ ] `starwatt/**` 单文件 ≤ 400 行
 - [ ] 无 `from X import _private` 跨模块调用
 - [ ] 无裸用 `datetime.now()`（AST 守卫通过）
 - [ ] 无公网 CDN 依赖
@@ -1085,12 +1085,12 @@ $ curl -fsSL https://<repo>/install.sh | bash
 
 | 需求 | 设计落点 | 里程碑 | 新增文件 |
 |---|---|---|---|
-| **Q15 所有配置 WebUI 可改** | §2.8 配置注册表 + 存储迁 DB + secrets 加密 + 导出导入 | M1(1.5) / M4(4.6) / M5(5.5) | `app/config_registry/` 5 文件 |
-| **Q16 飞书机器人开关** | §2.9 功能开关注册表 + 静默降级 | M1(1.6) / M4(4.7) / M5(5.6) | `app/flags.py` |
+| **Q15 所有配置 WebUI 可改** | §2.8 配置注册表 + 存储迁 DB + secrets 加密 + 导出导入 | M1(1.5) / M4(4.6) / M5(5.5) | `starwatt/config_registry/` 5 文件 |
+| **Q16 飞书机器人开关** | §2.9 功能开关注册表 + 静默降级 | M1(1.6) / M4(4.7) / M5(5.6) | `starwatt/flags.py` |
 | **Q17 安全/稳定/鲁棒** | §2.11 质量属性设计 + §2.8 安全措施 + 验收清单 | 全程 | — |
-| **Q18 解耦扩展** | §2.12 `Notifier`/`Endpoint` 协议 + 扩展 SOP | M1(1.8) / M6(6.6) | `app/protocols.py` + `docs/EXTENDING.md` |
+| **Q18 解耦扩展** | §2.12 `Notifier`/`Endpoint` 协议 + 扩展 SOP | M1(1.8) / M6(6.6) | `starwatt/protocols.py` + `docs/EXTENDING.md` |
 | **Q19 随机密码** | 安装时 `secrets.token_urlsafe(16)` + 强制首登改密 | M1(1.4) / M4(4.8) / M6(6.3-6.4) | — |
-| **Q20 日志分级** | §2.10 7 级 + 类别 + 模块级覆盖 + 文本/JSON | M1(1.7) / M5(5.8) | `app/logging_setup.py` |
+| **Q20 日志分级** | §2.10 7 级 + 类别 + 模块级覆盖 + 文本/JSON | M1(1.7) / M5(5.8) | `starwatt/logging_setup.py` |
 | **Q21 认证页面自主设计** | §2.13 移除 Basic Auth + `AuthLayout` + 6 个认证界面 | M4(4.9) / M5(5.3) | `layouts/AuthLayout.vue` + 6 view |
 | **Q22 分支与文件策略** | §0.1 全新分支 + 干净文件树 + 顺序约束 | **M0(0.1–0.8)** | — |
 

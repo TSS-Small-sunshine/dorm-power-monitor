@@ -1,4 +1,4 @@
-# 需求确认书（REQUIREMENTS）
+﻿# 需求确认书（REQUIREMENTS）
 
 > **状态**：✅ **已确认（v1.3）** —— **22 项决策**全部锁定，仅 Q8 待你审阅预分类
 > **基线**：`develop` @ `bb031f6` + 工作区未提交的 R61–R67 成果
@@ -197,7 +197,7 @@ def now_cst() -> datetime:
 
 **要求**：
 - 全项目**禁止**直接调用 `datetime.now()` / `datetime.today()` / `date.today()`
-- 统一走 `app.timeutil.now_cst()`（新增模块）
+- 统一走 `starwatt.timeutil.now_cst()`（新增模块）
 - 用 ruff 自定义规则或 AST 守卫在 CI 中强制检查
 - Docker 镜像中同时设置 `TZ=Asia/Shanghai` 作为双保险
 
@@ -268,7 +268,7 @@ def now_cst() -> datetime:
 **设计**：
 
 ```python
-# app/scheduler.py
+# starwatt/scheduler.py
 from apscheduler.schedulers.background import BackgroundScheduler
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -304,7 +304,7 @@ scheduler.start()
 - ❌ **J1 双 cron + flock 设计废弃**
 - ❌ **`deploy/dorm-cron.txt` 废弃**
 - ⚠️ 新增依赖 `APScheduler`（纯 Python，~1MB）
-- ⚠️ 新增 `app/scheduler.py` 模块
+- ⚠️ 新增 `starwatt/scheduler.py` 模块
 
 ---
 
@@ -703,6 +703,60 @@ def _admin_required(fn):
 | **合计** | 30d | **38d** |
 
 **对外口径：38 天（乐观）/ 45 天（现实）/ 55 天（含返工）**
+
+---
+
+### Q23 版本号与命名体系 ✅
+
+**答案**：引入**语义化版本号** + 「**星 × 电**」主题的**中英双语版本代号**（**不用星座**）
+
+**产品名（用户定）**：**StarWatt / 星瓦**
+> star（宇宙）× watt（电功率）—— 同时命中「太空感」与「电量监控」
+
+**关键设计**：
+
+| 层 | 命名 |
+|---|---|
+| **产品名** | **StarWatt / 星瓦** |
+| **Python 包** | `starwatt`（替代原方案的 `starwatt/`） |
+| **CLI 命令** | `starwatt` |
+| **Docker 镜像** | `ghcr.io/<owner>/starwatt` |
+| **systemd 服务** | `starwatt.service` |
+| 仓库名 | `dorm-power-monitor`（⚠️ 是否改待定，见 N1） |
+| 版本号 | `MAJOR.MINOR.PATCH`（SemVer） |
+| 版本代号 | 「中文 / English」 |
+| Git tag | `v2.0.0-starcore`（ASCII 安全） |
+
+**R69 重写 = `v2.0.0`「星核 / Star Core」**
+> 因为它是**破坏性重写**（Q22 删兼容 shim、Q14 换调度、Q21 删 Basic Auth、B1 换密码哈希、B2 换启动方式）→ 按 SemVer 必须进 MAJOR
+
+**代号序列（星 × 电 主题，非星座）—— 叙事线：一粒尘埃如何照亮一间宿舍**
+
+| 版本 | 代号 | 意象 | 轮次 |
+|---|---|---|---|
+| `1.0.0` | **初尘** / First Dust | 星际尘埃 · 一切之始 | R51c |
+| `1.1.0` | **微光** / Glimmer | 尘埃初亮 | R60–R68 |
+| **`2.0.0`** | **星核** / **Star Core** | **恒星核心聚变点火 —— 重写重燃** | **R69** ← 当前 |
+| `2.1.0` | 星轨 / Star Trail | 稳定绕行 | 预留 |
+| `2.2.0` | 星火 / Spark | 电火花 / 星火 | 预留 |
+| `2.3.0` | 尘光 / Dustlight | 尘与光交融 | 预留 |
+| `2.4.0` | 电弧 / Arc | 电弧 / 光弧 | 预留 |
+| `2.5.0` | 流光 / Streamer | 光的流动 | 预留 |
+| `2.6.0` | 凝辉 / Coalesce | 汇聚成辉 | 预留 |
+| `3.0.0` | 星河 / Star River | 汇流成河 | 预留 |
+| `3.1.0` | 长明 / Everglow | 长明不灭 | 预留 |
+| `4.0.0` | 破晓 / Daybreak | 新纪元 | 预留 |
+
+**主题合理性**：恒星本质上是宇宙的**聚变反应堆** —— 光与电同源。
+「星 + 瓦」正好把「宇宙能量」与「电功率」缝进一个词。
+
+**明确禁止**：星座名（猎户/天琴/Orion/Lyra）· 具体星名（织女/Vega）· 天体编号 · 神话人名 · 行星名
+
+**12 处落点**：`pyproject.toml` / `starwatt/__init__.py` / `/healthz` / 前端页脚 / SPA title / `CHANGELOG.md` / git tag / Release 标题 / README 头部 / 镜像 tag / systemd 服务 / CLI `--version`
+
+**连带影响**：Python 包名 `starwatt/` → `starwatt/`（约 40 处文档引用需同步；现在改便宜，M1 后改贵）
+
+**详见**：`NAMING.md`
 
 ---
 

@@ -1,4 +1,4 @@
-# 阻断级问题修复方案（BLOCKER FIXES）
+﻿# 阻断级问题修复方案（BLOCKER FIXES）
 
 > **修复对象**：`PLAN_AUDIT.md` 的 5 个阻断级问题（B1–B5）+ 2 个设计级严重问题（M1 / M4）
 > **修复日期**：2026-10-06
@@ -47,7 +47,7 @@
 **替代方案：`hashlib.scrypt`（Python 标准库）**
 
 ```python
-# app/auth/password.py —— 零第三方依赖
+# starwatt/auth/password.py —— 零第三方依赖
 import hashlib, secrets, base64
 
 def hash_password(plain: str) -> str:
@@ -249,9 +249,9 @@ from __future__ import annotations
 import os
 import logging
 
-from app.config import settings
-from app.logging_setup import setup_logging
-from app.web.factory import create_app
+from starwatt.config import settings
+from starwatt.logging_setup import setup_logging
+from starwatt.web.factory import create_app
 
 setup_logging(settings)
 logger = logging.getLogger("web")
@@ -272,7 +272,7 @@ def start_scheduler_once() -> None:
             "调度器不得在 master 进程启动：preload_app 必须为 False，"
             "且不要使用 app.run()。"
         )
-    from app.scheduler import build_scheduler
+    from starwatt.scheduler import build_scheduler
     _scheduler = build_scheduler()
     _scheduler.start()
     logger.info("scheduler started (pid=%s, jobs=%s)",
@@ -288,7 +288,7 @@ def stop_scheduler() -> None:
         _scheduler = None
 ```
 
-### 3.4 `app/scheduler.py`
+### 3.4 `starwatt/scheduler.py`
 
 ```python
 def build_scheduler() -> BackgroundScheduler:
@@ -310,7 +310,7 @@ def build_scheduler() -> BackgroundScheduler:
 
 def scrape_job() -> None:
     try:
-        from app.scraper.service import run_once
+        from starwatt.scraper.service import run_once
         run_once(fetch_only=False)
     except Exception:
         logger.exception("scheduler: scrape_job crashed")   # 线程级兜底
@@ -404,7 +404,7 @@ def scrape_job() -> None:
 
 | 情况 | 处理 |
 |---|---|
-| 用户忘了随机密码 | 删除 `records.db` 重装；或手工执行 `python -m app.auth.reset-admin` |
+| 用户忘了随机密码 | 删除 `records.db` 重装；或手工执行 `python -m starwatt.auth.reset-admin` |
 | `users` 表非空（升级场景） | 跳过 bootstrap；但**因 bcrypt→scrypt 变更，旧密码无法验证** → 走"升级时重置密码"流程（与 Q19 一致） |
 | Docker 环境下用户看不到 stdout | `docker compose logs` 可查；同时写卷内 `.initial-admin-password` |
 
@@ -517,7 +517,7 @@ class Setting:
 ### 7.1 修复：版本化迁移（约 50 行）
 
 ```python
-# app/db/migrations.py
+# starwatt/db/migrations.py
 from __future__ import annotations
 import logging
 import sqlite3

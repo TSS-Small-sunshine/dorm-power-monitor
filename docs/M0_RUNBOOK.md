@@ -1,4 +1,4 @@
-# M0 执行手册（M0 RUNBOOK）
+﻿# M0 执行手册（M0 RUNBOOK）
 
 > **用途**：把 `REWRITE_PLAN.md §3 M0` 的 8 个步骤落成**可逐条复制执行**的命令清单
 > **环境**：Windows + PowerShell（开发机）→ Linux（部署机）
@@ -288,11 +288,21 @@ git push origin --delete rewrite/r69   # 远端删除（若已 push）
 ```powershell
 @'
 [project]
-name = "dorm-power-monitor"
+name = "starwatt"
 version = "2.0.0"
-description = "宿舍电量监控 —— 自托管、可分发"
+description = "星瓦 · StarWatt —— 宿舍电量监控 / dorm power monitor"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+keywords = ["dorm", "power", "electricity", "feishu", "self-hosted"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+starwatt = "starwatt.cli:main"
 
 [tool.ruff]
 line-length = 100
@@ -310,7 +320,7 @@ ignore = ["E501"]                    # 行长由 line-length 管
 python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_ignores = true
-files = ["app"]
+files = ["starwatt"]
 exclude = ["tests/legacy"]
 
 [tool.pytest.ini_options]
@@ -318,6 +328,10 @@ testpaths = ["tests/unit", "tests/integration", "tests/regression"]
 addopts = "-q"
 '@ | Set-Content -Encoding UTF8 pyproject.toml
 ```
+
+> **命名依据**（Q23 / `NAMING.md`）：
+> `name = "starwatt"` · `version = "2.0.0"` · 代号「星核 / Star Core」
+> `[project.scripts]` 提供 `starwatt` 命令（M2 实现 `starwatt/cli.py`）
 
 ### 0.3.2 `requirements-dev.txt`（新建）
 
@@ -344,7 +358,7 @@ New-Item -ItemType File -Force -Path tests/unit/.gitkeep, tests/integration/.git
 @'
 """M0 阶段的 conftest —— 只为跑通契约快照生成器。
 
-M1 引入 app/timeutil.py 后，本文件会重写为正式 fixture。
+M1 引入 starwatt/timeutil.py 后，本文件会重写为正式 fixture。
 现在必须与旧代码（config.py / db.py / web.py / dorm_power.py / auth.py）兼容。
 """
 from __future__ import annotations
@@ -947,7 +961,7 @@ git checkout HEAD~1 -- <path>            # 或单个文件
 |---|---|
 | 新建 `web.py`（gunicorn 入口） | **M2** |
 | 新建 `gunicorn.conf.py` | **M2** |
-| 新建 `app/` | **M1** |
+| 新建 `starwatt/` | **M1** |
 | 新建 `frontend/` | **M5** |
 | 更新 `deploy/dorm-web.service` | **M2** |
 
@@ -959,7 +973,7 @@ git checkout HEAD~1 -- <path>            # 或单个文件
 
 ### 0.7.1 AST 守卫脚本（新建 `scripts/ast_guard.py`）
 
-> M0 阶段 `app/` 还不存在，守卫会**空跑通过** —— 它的作用是给 M1+ 立规矩。
+> M0 阶段 `starwatt/` 还不存在，守卫会**空跑通过** —— 它的作用是给 M1+ 立规矩。
 
 ```powershell
 New-Item -ItemType Directory -Force -Path scripts | Out-Null
@@ -976,19 +990,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "app"
+APP = ROOT / "starwatt"
 
 VIOLATIONS: list[str] = []
 
 # R1: domain 不得 import 这些
-DOMAIN_FORBIDDEN = {"requests", "flask", "sqlite3", "app.db", "app.config_registry"}
+DOMAIN_FORBIDDEN = {"requests", "flask", "sqlite3", "starwatt.db", "starwatt.config_registry"}
 
-# R4: app/** 不得 import 顶层旧模块
+# R4: starwatt/** 不得 import 顶层旧模块
 LEGACY_TOP = {"web", "dorm_power", "feishu_bot", "config", "db"}
 
-# R7: 禁止裸用时间函数（唯一例外：app/timeutil.py）
+# R7: 禁止裸用时间函数（唯一例外：starwatt/timeutil.py）
 TIME_CALLS = {"now", "today", "utcnow"}
-TIME_ALLOWED_FILES = {"app/timeutil.py"}
+TIME_ALLOWED_FILES = {"starwatt/timeutil.py"}
 
 
 def _rel(p: Path) -> str:
@@ -1017,16 +1031,16 @@ def _check_file(path: Path) -> None:
     imports = _imports(tree)
 
     # R1
-    if rel.startswith("app/domain/"):
+    if rel.startswith("starwatt/domain/"):
         for bad in DOMAIN_FORBIDDEN:
             if any(i == bad or i.startswith(bad + ".") for i in imports):
                 VIOLATIONS.append(f"[R1] {rel}: domain 层禁止 import {bad}")
 
     # R4
-    if rel.startswith("app/"):
+    if rel.startswith("starwatt/"):
         for bad in LEGACY_TOP:
             if bad in imports:
-                VIOLATIONS.append(f"[R4] {rel}: app/** 禁止 import 顶层旧模块 {bad}")
+                VIOLATIONS.append(f"[R4] {rel}: starwatt/** 禁止 import 顶层旧模块 {bad}")
 
     # R5: 禁止 import 下划线私有符号
     for node in ast.walk(tree):
@@ -1047,12 +1061,12 @@ def _check_file(path: Path) -> None:
                     continue
                 VIOLATIONS.append(
                     f"[R7] {rel}:{node.lineno}: 禁止裸用 .{node.func.attr}()"
-                    f"（请用 app.timeutil.now_cst()）")
+                    f"（请用 starwatt.timeutil.now_cst()）")
 
 
 def main() -> int:
     if not APP.exists():
-        print("app/ 不存在 —— M0 阶段正常，跳过")
+        print("starwatt/ 不存在 —— M0 阶段正常，跳过")
         return 0
     for p in sorted(APP.rglob("*.py")):
         _check_file(p)
@@ -1126,7 +1140,7 @@ jobs:
 
 ```powershell
 python -m scripts.ast_guard
-# 预期：app/ 不存在 —— M0 阶段正常，跳过
+# 预期：starwatt/ 不存在 —— M0 阶段正常，跳过
 
 python -m ruff check .
 # 预期：可能对 scripts/ast_guard.py 报几条，按提示修
@@ -1143,7 +1157,7 @@ git commit -m "chore(m0): add AST guard (R1-R7) + CI pipeline
 
 - scripts/ast_guard.py: layer rules R1-R7
   R1 domain no-IO / R4 no legacy imports / R5 no private imports
-  R7 no bare datetime.now() (must use app.timeutil.now_cst)
+  R7 no bare datetime.now() (must use starwatt.timeutil.now_cst)
 - .github/workflows/ci.yml: ruff + AST guard + pytest + compileall + secret scan
 - triggers on rewrite/** branches"
 ```
@@ -1164,7 +1178,7 @@ git commit -m "chore(m0): add AST guard (R1-R7) + CI pipeline
 
 设计意图：
   fixtures 是"旧代码的期望行为"，M0 只保证它们**完整、可加载、形状正确**；
-  等 M1 起有了 app/ 实现，本文件会扩展为"新实现 vs fixtures"的对比断言。
+  等 M1 起有了 starwatt/ 实现，本文件会扩展为"新实现 vs fixtures"的对比断言。
 """
 from __future__ import annotations
 
@@ -1308,7 +1322,7 @@ if ($hits) { $hits } else { Write-Host "  OK - 无 legacy import" }
 
 | 检查 | 预期 |
 |---|---|
-| AST 守卫 | `app/ 不存在 —— M0 阶段正常，跳过` |
+| AST 守卫 | `starwatt/ 不存在 —— M0 阶段正常，跳过` |
 | Ruff | 0 error |
 | **Pytest** | **全部通过**（约 20 个用例） |
 | compileall | 无输出 |
@@ -1510,7 +1524,7 @@ rewrite/r69
     └── reports/m0_*.txt/md       ← 新
 ```
 
-**M1 要做的**：在这个空壳上建 `app/`（timeutil / config / db / auth / config_registry / flags / logging_setup / protocols）。
+**M1 要做的**：在这个空壳上建 `starwatt/`（timeutil / config / db / auth / config_registry / flags / logging_setup / protocols）。
 
 ---
 
