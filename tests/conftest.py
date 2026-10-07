@@ -26,6 +26,17 @@ if str(PROJ) not in sys.path:
 #: 所有时间相关断言的基准时刻（朴素 CST）
 FIXED_NOW = datetime(2026, 10, 6, 12, 0, 0)
 
+#: 认证策略环境变量 —— 测试里一律清空以保证确定性
+AUTH_ENV_KEYS: tuple[str, ...] = (
+    "AUTH_SESSION_HOURS",
+    "AUTH_LOCKOUT_MINUTES",
+    "AUTH_LOCKOUT_THRESHOLD",
+    "AUTH_INITIAL_ADMIN_USERNAME",
+    "AUTH_INITIAL_ADMIN_PASSWORD",
+    "BOOTSTRAP_ADMIN_PASSWORD",
+    "BOOTSTRAP_ADMIN_USERNAME",
+)
+
 
 @pytest.fixture
 def settings_override(monkeypatch, tmp_path: Path):
@@ -36,6 +47,9 @@ def settings_override(monkeypatch, tmp_path: Path):
     from starwatt import config as cfg
 
     for key in cfg.BOOTSTRAP_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    # 认证策略变量也清掉 —— 否则宿主机 .env 里的值会让断言不确定
+    for key in AUTH_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
 
     data_dir = tmp_path / "data"
@@ -48,6 +62,9 @@ def settings_override(monkeypatch, tmp_path: Path):
             "FLASK_SECRET_KEY": "test-secret-key-not-for-production",
         }
     )
+    # ⚠️ 必须**同时**写回 os.environ：starwatt.auth.secret 读的是进程环境，
+    # 不写的话它会以为密钥缺失，进而往真实 .env 追加一行（污染开发机）。
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret-key-not-for-production")
     cfg.override_settings(overridden)
     yield overridden
     cfg.override_settings(None)

@@ -23,7 +23,7 @@ L22 修复：时间窗口的 8 小时偏差
 重写改为在 Python 侧用 :func:`starwatt.timeutil.now_cst` 算出 CST 截止时间，
 作为**参数**传给 SQL::
 
-    cutoff = to_stamp(now_cst() - timedelta(hours=hours))
+    cutoff = to_stamp(timeutil.now_cst() - timedelta(hours=hours))
     WHERE ts >= ?
 
 这是**有意的行为修正**。contract fixture 只固化字段名与算法向量
@@ -37,6 +37,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from starwatt import timeutil
 from starwatt.db.coerce import coerce_float, coerce_int, coerce_str
 from starwatt.db.connection import connect
 from starwatt.db.models import (
@@ -50,7 +51,7 @@ from starwatt.db.models import (
     User,
     Violation,
 )
-from starwatt.timeutil import now_cst, to_stamp
+from starwatt.timeutil import to_stamp
 
 logger = logging.getLogger("starwatt.db.repos")
 
@@ -71,12 +72,12 @@ __all__ = [
 
 def _cutoff(hours: int) -> str:
     """CST 截止时间戳（含），用于 ``ts >= ?`` 比较。"""
-    return to_stamp(now_cst() - timedelta(hours=hours))
+    return to_stamp(timeutil.now_cst() - timedelta(hours=hours))
 
 
 def _cutoff_days(days: int) -> str:
     """按天算的 CST 截止**日期**（``YYYY-MM-DD``）。"""
-    return (now_cst() - timedelta(days=days)).strftime("%Y-%m-%d")
+    return (timeutil.now_cst() - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def hash_token(raw: str) -> str:
@@ -470,7 +471,7 @@ class UserRepo:
                     username,
                     password_hash,
                     role,
-                    created_at or to_stamp(now_cst()),
+                    created_at or to_stamp(timeutil.now_cst()),
                     1 if must_change_password else 0,
                 ),
             )
@@ -518,7 +519,7 @@ class UserRepo:
         with connect() as conn:
             conn.execute(
                 "UPDATE users SET last_login_at = ? WHERE id = ?",
-                (at or to_stamp(now_cst()), user_id),
+                (at or to_stamp(timeutil.now_cst()), user_id),
             )
 
     @staticmethod
@@ -575,7 +576,7 @@ class SessionRepo:
                     user_id,
                     token_hash,
                     expires_at,
-                    to_stamp(now_cst()),
+                    to_stamp(timeutil.now_cst()),
                     ip or "",
                     user_agent or "",
                 ),
@@ -617,7 +618,7 @@ class SessionRepo:
         with connect() as conn:
             cur = conn.execute(
                 "DELETE FROM sessions WHERE expires_at < ?",
-                (now or to_stamp(now_cst()),),
+                (now or to_stamp(timeutil.now_cst()),),
             )
         return int(cur.rowcount or 0)
 
@@ -672,7 +673,7 @@ class AuditRepo:
                     target,
                     ip,
                     user_agent,
-                    created_at or to_stamp(now_cst()),
+                    created_at or to_stamp(timeutil.now_cst()),
                     payload,
                 ),
             )
@@ -709,7 +710,7 @@ class FailedAttemptRepo:
             conn.execute(
                 "INSERT INTO failed_attempts "
                 "(username, ip, attempted_at) VALUES (?, ?, ?)",
-                (username, ip or "", at or to_stamp(now_cst())),
+                (username, ip or "", at or to_stamp(timeutil.now_cst())),
             )
 
     @staticmethod
