@@ -1,0 +1,101 @@
+{
+  "indexes": {
+    "idx_audit_action": "audit_log",
+    "idx_audit_time": "audit_log",
+    "idx_audit_user": "audit_log",
+    "idx_daily_elec_dt": "daily_elec",
+    "idx_failed_attempts_time": "failed_attempts",
+    "idx_failed_attempts_username": "failed_attempts",
+    "idx_pay_history_dt": "pay_history",
+    "idx_records_ts": "records",
+    "idx_sessions_expires": "sessions",
+    "idx_sessions_token": "sessions",
+    "idx_violations_dt": "violations",
+    "sqlite_autoindex_daily_elec_1": "daily_elec",
+    "sqlite_autoindex_meta_1": "meta",
+    "sqlite_autoindex_pay_history_1": "pay_history",
+    "sqlite_autoindex_records_1": "records",
+    "sqlite_autoindex_run_status_1": "run_status",
+    "sqlite_autoindex_sessions_1": "sessions",
+    "sqlite_autoindex_users_1": "users",
+    "sqlite_autoindex_violations_1": "violations"
+  },
+  "tables": {
+    "audit_log": [
+      "id",
+      "user_id",
+      "action",
+      "target",
+      "ip",
+      "user_agent",
+      "created_at",
+      "details"
+    ],
+    "daily_elec": [
+      "roomId",
+      "dt",
+      "total_eq",
+      "esbm",
+      "eebm",
+      "zong_eq"
+    ],
+    "failed_attempts": [
+      "id",
+      "username",
+      "ip",
+      "attempted_at"
+    ],
+    "meta": [
+      "key",
+      "value"
+    ],
+    "pay_history": [
+      "roomId",
+      "dt",
+      "pay_type",
+      "fee_type",
+      "money"
+    ],
+    "records": [
+      "id",
+      "ts",
+      "read_time",
+      "remain"
+    ],
+    "run_status": [
+      "roomId",
+      "meter_no",
+      "dt",
+      "run_status",
+      "work_status",
+      "update_dt",
+      "vol",
+      "cur",
+      "yggl",
+      "stop_reason"
+    ],
+    "sessions": [
+      "id",
+      "user_id",
+      "token",
+      "expires_at",
+      "created_at",
+      "ip",
+      "user_agent"
+    ],
+    "users": [
+      "id",
+      "username",
+      "password_hash",
+      "role",
+      "created_at",
+      "last_login_at"
+    ],
+    "violations": [
+      "roomId",
+      "dt",
+      "wg_reason",
+      "wg_power"
+    ]
+  }
+}

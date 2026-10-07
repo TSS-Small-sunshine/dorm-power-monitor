@@ -242,6 +242,40 @@
 | L17 | **session token 明文入库** | `auth.py:411-425`：token **原样**写入 `sessions.token`；`R68_RELEASE_NOTES.md` 声称"server-side session row keyed by the token **SHA-256**" —— 与代码不符 | 🟠🔒 |
 | L18 | **`users` 表无 `disabled` 字段** | 实际 schema `db/_legacy.py:239-246` 只有 `id/username/password_hash/role/created_at/last_login_at`；`R68_RELEASE_NOTES.md` 声称有 "disabled flag" —— 与代码不符 | 🟡 |
 | L19 | **session 是滑动过期** | `auth.py:428-438`：每次校验都 `_shifted_expires()` 前推 24h，**实际可无限续期**（R68 文档未提及此行为） | 🟡 |
+| **L20** | 🔴 **`meta.admin_password` 明文密码仍在活跃使用** | `web.py:1240` 读它做认证（`_admin_required` 装饰器）；`web.py:2288/2396/3086` **三处明文写入**。R68 文档声称"fully removed" —— **与代码不符** | 🔴🔒 |
+| **L21** | 🔴 **整个「推送开关体系」是死代码** | 见下方详述 —— Admin UI 的推送开关与静默时段**对行为完全无影响** | 🔴 |
+
+### L21 详述：推送开关体系是死代码
+
+**证据链（零调用证明）**：
+
+| 位置 | 事实 |
+|---|---|
+| `feishu_bot.py:2107` | `def push_if_enabled(layer, card)` —— **零调用点** |
+| `feishu_bot.py:2113` | `_should_push(layer)` **只**被 `push_if_enabled` 调用 |
+| `feishu_bot.py:2116` | `_in_quiet_hours()` **只**被 `push_if_enabled` 调用 |
+| `web.py:2199/2205/2206` | `push_l1_enable` / `push_l2_enable` 只被 **写入**与**返回**，**从无读取判断** |
+| `push_receivers_l1/l2/report/alert` | 4 个常量**零调用** |
+
+**后果**：
+
+| 开关 | 实际有效性 |
+|---|---|
+| `push_l1_enable` | ❌ **死** |
+| `push_l2_enable` | ❌ **死** |
+| `quiet_hours_start` / `quiet_hours_end` | ❌ **死**（静默时段不生效） |
+| `push_receivers_*`（4 个） | ❌ **死** |
+| `push_daily/weekly/monthly_enable` | ✅ 有效（`_l3_due` 直接读 meta） |
+| `push_daily/weekly/monthly_time` | ✅ 有效（`_read_push_time`） |
+
+**五条推送路径全部绕过开关**：L1 低电 / L2 摘要 / 违规 / 离线 / stale
+→ 都是直接 `_post_feishu(card)`，**没有** `push_if_enabled` 检查。
+
+**对重写的影响**：`Q16（功能开关）` 不是"把现有开关搬到 UI"，而是
+**从零实现真正的开关体系**。见 `REWRITE_PLAN.md §2.9`。
+
+**快照固化**：`tests/regression/fixtures/behaviors.json` 的
+`_findings_dead_push_switches` 已记录完整证据链。
 
 ---
 
