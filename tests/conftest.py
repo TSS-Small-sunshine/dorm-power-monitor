@@ -1,22 +1,20 @@
-"""M0 阶段的 conftest —— 只为跑通契约快照生成器。
+"""StarWatt 测试公共 fixture。
 
-M1 引入 starwatt/timeutil.py 后，本文件会重写为正式 fixture。
-现在必须与旧代码（config.py / db.py / web.py / dorm_power.py / auth.py）兼容。
+M1 起本文件针对**新架构**（``starwatt/``）重写 —— 不再 import 已删除的旧模块。
 
-设计说明
-========
+提供的 fixture
+==============
 
-* ``tmp_db``     —— 把 ``config.DB_PATH`` 指向临时文件，隔离每个用例。
-* ``frozen_now`` —— 冻结时间到 ``FIXED_NOW``。
-  旧代码用 ``from datetime import datetime`` 后直接 ``datetime.now()``，
-  所以逐个模块把它们的 ``datetime`` 符号替换为冻结子类（而不是 patch 全局）。
-* ``no_network`` —— 禁止真实网络调用，保证快照生成离线可重现。
+* ``settings_override`` —— 把全局 ``Settings`` 指向临时目录（隔离 DB / 数据目录）
+* ``tmp_db``           —— 在临时目录上 ``init()`` 一个空库，用完自动清理
+* ``frozen_now``       —— 冻结 ``starwatt.timeutil.now_cst()``，让时间相关断言确定
+* ``no_network``       —— 禁止真实网络调用（任何用例都不得联网）
 """
 from __future__ import annotations
 
-import datetime as _dt
-import importlib
 import sys
+from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -25,64 +23,72 @@ PROJ = Path(__file__).resolve().parents[1]
 if str(PROJ) not in sys.path:
     sys.path.insert(0, str(PROJ))
 
-# 朴素 CST 的固定时刻（与项目「全栈朴素本地时间」约定一致）
-FIXED_NOW = _dt.datetime(2026, 10, 6, 12, 0, 0)
+#: 所有时间相关断言的基准时刻（朴素 CST）
+FIXED_NOW = datetime(2026, 10, 6, 12, 0, 0)
 
 
 @pytest.fixture
-def tmp_db(monkeypatch, tmp_path):
-    """把 DB_PATH 指向临时文件，隔离每个用例。"""
-    db_file = tmp_path / "test.db"
-    import config
+def settings_override(monkeypatch, tmp_path: Path):
+    """把全局 Settings 指到 ``tmp_path``，并把 bootstrap 环境变量清空。
 
-    monkeypatch.setattr(config, "DB_PATH", str(db_file), raising=False)
+    这样任何用例都不会碰到真实的 ``records.db`` 或真实 ``.env`` 里的密钥。
+    """
+    from starwatt import config as cfg
 
-    import db as dbmod
+    for key in cfg.BOOTSTRAP_KEYS:
+        monkeypatch.delenv(key, raising=False)
 
-    importlib.reload(dbmod)          # 让 db 重新读 DB_PATH
-    dbmod.init()
-    yield db_file
-    dbmod.init()                     # 幂等收尾
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    overridden = cfg.load_settings(
+        {
+            "DORM_DATA_DIR": str(data_dir),
+            "DB_PATH": str(data_dir / "test.db"),
+            "FLASK_PORT": "5099",
+            "FLASK_SECRET_KEY": "test-secret-key-not-for-production",
+        }
+    )
+    cfg.override_settings(overridden)
+    yield overridden
+    cfg.override_settings(None)
 
 
 @pytest.fixture
-def frozen_now(monkeypatch):
-    """冻结时间，逐个模块替换其 ``datetime`` / ``date`` 符号。"""
+def tmp_db(settings_override) -> Iterator[Path]:
+    """在临时目录上初始化一个空库。
 
-    class _FrozenDateTime(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None):       # noqa: ARG003
-            return FIXED_NOW
+    依赖 ``settings_override``，所以调用本 fixture 即自动隔离。
+    """
+    from starwatt import db
 
-        @classmethod
-        def today(cls):
-            return FIXED_NOW
+    db.init()
+    yield settings_override.db_path
+    db.init()  # 幂等收尾
 
-    class _FrozenDate(_dt.date):
-        @classmethod
-        def today(cls):
-            return FIXED_NOW.date()
 
-    for name in ("dorm_power", "auth", "web", "db"):
-        try:
-            mod = importlib.import_module(name)
-        except Exception:            # noqa: BLE001 — 模块可能尚未存在
-            continue
-        if getattr(mod, "datetime", None) is _dt.datetime:
-            monkeypatch.setattr(mod, "datetime", _FrozenDateTime)
-        if getattr(mod, "date", None) is _dt.date:
-            monkeypatch.setattr(mod, "date", _FrozenDate)
-    yield FIXED_NOW
+@pytest.fixture
+def frozen_now(monkeypatch) -> datetime:
+    """冻结 ``starwatt.timeutil.now_cst()`` 到 ``FIXED_NOW``。
+
+    只 patch 这一个函数 —— 其余模块都应通过它取时间（AST 守卫 R7 强制），
+    所以不需要逐模块替换 ``datetime`` 符号。
+    """
+    from starwatt import timeutil
+
+    monkeypatch.setattr(timeutil, "now_cst", lambda: FIXED_NOW)
+    return FIXED_NOW
 
 
 @pytest.fixture
 def no_network(monkeypatch):
-    """禁止真实网络调用（快照生成必须离线可重现）。"""
+    """禁止真实网络调用。"""
     import requests
 
     def _boom(*_args, **_kwargs):
-        raise RuntimeError("network disabled in tests")
+        raise requests.RequestException("network disabled in tests")
 
     monkeypatch.setattr(requests.Session, "get", _boom, raising=False)
     monkeypatch.setattr(requests.Session, "post", _boom, raising=False)
+    monkeypatch.setattr(requests, "get", _boom, raising=False)
+    monkeypatch.setattr(requests, "post", _boom, raising=False)
     yield

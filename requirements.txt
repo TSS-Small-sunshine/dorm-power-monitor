@@ -1,40 +1,33 @@
+# =============================================================================
+# StarWatt 星瓦 —— 运行时依赖
+# =============================================================================
+# 架构兼容性（Q3 / Q4 / B1，见 docs/BLOCKER_FIXES.md §1）
+# -----------------------------------------------------------------------------
+#   flask / gunicorn / requests / python-dotenv / APScheduler / tzdata
+#       → 纯 Python，无编译，任意架构可用
+#   pycryptodome / pillow
+#       → 普通 C 扩展，armv7 上只需 gcc / libjpeg-dev 即可编译
+#
+# 已**刻意剔除**的两个 Rust 依赖（它们是 armv7 上「必然编译失败」的根因）：
+#   pydantic  → 旧代码里生产零调用，重写用 dataclass 替代
+#   bcrypt    → 改用 Python 标准库 hashlib.scrypt（安全等价，见 starwatt/auth）
+# =============================================================================
+
 flask>=3.0
 gunicorn>=21.0
 requests>=2.31
-pycryptodome>=3.18
-pillow>=10.0
 python-dotenv>=1.0
-pydantic>=2.0,<3.0
-bcrypt>=4.0
-# Round 63 — added bcrypt for session-auth password hashing.
-#   auth.py stores users.password_hash as bcrypt(str, gensalt(rounds=12))
-#   so a stolen DB leak does not reveal plaintext passwords.  Rounds=12
-#   trades ~250 ms / hash on a typical server against a major slowdown
-#   of offline brute-force.  The dashboard only hashes on login /
-#   admin-creation events (not per request), so the latency is bounded
-#   to the user-facing auth path.
-#
-#   Pre-R63 the project used HTTP Basic Auth against meta.admin_password
-#   (plain text) which was acceptable for a single-tenant home dashboard
-#   but blocked adding / removing users without touching SQL.  bcrypt
-#   unlocks the per-user + session-revoke model that R63 introduces.
-# Round 34D — dropped beautifulsoup4 (Round 21 L3 dead-dep audit).
-#   The scraper parses portal responses with stdlib ``html.parser`` via
-#   ``BeautifulSoup(..., 'html.parser')`` only when BS4 was present,
-#   but every code path was migrated to regex / lxml-free parsing in
-#   Round 21.  No code anywhere in the repo still imports bs4; verify
-#   with:  grep -r "from bs4\|import bs4" dorm-power-monitor/
-#
-# Round 61 — added pydantic as a top-level dependency.
-#   The data layer was split into db.models (Pydantic v2 entities:
-#   Record / DailyElec / Violation / Pay / RunStatus / MetaEntry /
-#   StatsCard) and db.repo (Repository wrappers around the same
-#   SQL).  Pydantic v2 is the project-wide pin (>=2.0,<3.0) — the v1
-#   API is intentionally NOT supported because db.models uses
-#   Pydantic v2-only features (ConfigDict, field_validator, alias
-#   semantics).  Pre-R61 callers keep working unchanged: the db
-#   package re-exports every legacy public function from
-#   db._legacy.py, so ``import db; db.insert(...)`` still works
-#   without pydantic installed (the legacy code path never imports
-#   it).  pydantic only matters for code that opts into the new
-#   typed surface (``from db.models import Record``).
+
+# Q14 —— 进程内调度（替代旧的双 cron + flock）
+APScheduler>=3.10,<4.0
+
+# Q10 —— zoneinfo 的时区数据库
+#   Linux 有系统 tzdata，但 Windows 与 python:*-slim 镜像**没有**，
+#   缺它会导致 ZoneInfo("Asia/Shanghai") 直接抛 ZoneInfoNotFoundError。
+tzdata>=2024.1
+
+# 飞书事件 AES-256-CBC 解密（starwatt/notify/crypto.py）
+pycryptodome>=3.18
+
+# 飞书 PNG 卡片渲染（starwatt/notify/renderer.py）
+pillow>=10.0
