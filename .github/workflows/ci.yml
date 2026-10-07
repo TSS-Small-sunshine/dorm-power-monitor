@@ -24,7 +24,7 @@ jobs:
       - name: Ruff
         run: python -m ruff check .
 
-      - name: AST guard (R1-R7)
+      - name: AST guard (R1-R8)
         run: python -m scripts.ast_guard
 
       - name: Pytest
@@ -34,6 +34,4 @@ jobs:
         run: python -m compileall -q -x '(\.venv|__pycache__|\.git|node_modules)' .
 
       - name: Secret scan
-        run: |
-          ! grep -rEn 'FEISHU_APP_SECRET=[^<]|[A-Za-z0-9]{32,}' \
-              --include='*.py' --include='*.md' --include='*.yml' .
+        run: python -m scripts.secret_scan

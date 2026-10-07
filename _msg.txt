@@ -1,0 +1,36 @@
+chore(m1): harden the CI guards - add R8 (BOM) and a real secret scanner
+
+R8: no UTF-8 BOM, anywhere.
+    Hit for real during M1 - Windows `Set-Content -Encoding UTF8` silently
+    prepends a BOM, and pytest then reports the baffling
+    "invalid non-printable character U+FEFF". Now CI catches it. The check
+    scans every .py in the repo (tests/ and scripts/ included, since those
+    are executed too) and still parses BOM'd files so other rules run.
+
+Secret scan rewritten as scripts/secret_scan.py (was an inline grep).
+    The old rule was `grep -rE '[A-Za-z0-9]{32,}'`, which fires on ANY long
+    string - fake hashes in tests, base64 samples, example UUIDs. A check
+    that noisy gets ignored, and then it is not a check. The new scanner
+    matches assignment SHAPES only: <sensitive name> = <24+ char value>.
+
+    Two real bugs found while writing it:
+
+    * `.env` was never scanned at all. `Path(".env").suffix` is the empty
+      string - a dotfile has no suffix - so the one file most likely to
+      hold credentials was silently skipped. Now uses an effective-suffix
+      helper, and `.env.example` (which IS committed) is scanned too.
+      Proof it mattered: the first run immediately flagged the developer's
+      real DORM_OPENID in their local .env.
+    * False positive on env-key constants: `ENV_X_PASSWORD = "X_PASSWORD"`
+      was reported as a leak because the value happened to be long. Values
+      that are themselves ALL_CAPS identifiers are now recognised as names.
+
+    The local `.env` is skipped by design (gitignored, holds real secrets);
+    flagging it every run is noise, not signal.
+
+Both scripts are now covered by tests/unit/test_guard_scripts.py, because a
+guard that silently stops working is worse than no guard. Writing those tests
+surfaced the self-reference trap: the test file's own fake credentials were
+being flagged, so they are assembled from fragments at runtime.
+
+Verified: 231 tests green; ruff 0; AST guard R1-R8 passes; secret scan clean.
