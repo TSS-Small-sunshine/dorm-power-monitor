@@ -1,0 +1,319 @@
+<!doctype html>
+<!-- R51b — preview_v2 minimal modern (Linear / Vercel style) + R49 backend integration -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<title>电费助手 · 实时概览</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="topnav-inner">
+    <div class="brand">
+      <span class="brand-mark">⚡</span>
+      <span>电费助手</span>
+    </div>
+    <div class="tabs">
+      <button type="button" class="tab active" data-section="overview">概览</button>
+      <button type="button" class="tab" data-section="history">历史</button>
+      <button type="button" class="tab" data-section="finance">违规</button>
+      <button type="button" class="tab" data-section="meter">电表</button>
+    </div>
+    <div class="nav-actions">
+      <button id="theme-toggle" class="icon-btn" type="button" aria-label="主题">🎨</button>
+      <button id="refresh-btn" class="refresh-btn" type="button" aria-label="刷新数据">
+        <dorm-spinner glyph="⟳" speed="1000" id="refresh-spinner">⟳</dorm-spinner><span>刷新</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main>
+  <!-- ============================================================ -->
+  <!-- 概览 — preview_v2 主视觉 (hero + chart + 4 stat cards)        -->
+  <!-- ============================================================ -->
+  <section id="section-overview" class="section active" data-section="overview">
+    <div class="hero">
+      <div class="hero-label">剩余电量</div>
+      <div class="hero-value">
+        {{ stats.remain if stats.remain is not none else '—' }}<span class="hero-unit">kW·h</span>
+      </div>
+      <div class="hero-meta">
+        <span class="meta-item"><span class="status-dot" id="hero-status-dot"></span><span id="hero-status-text">已连接</span></span>
+        <span class="meta-item">抄表 {{ stats.read_time or '—' }}</span>
+        <span class="meta-item" id="last-update">{{ initialLatestTs }}</span>
+      </div>
+    </div>
+
+    <dorm-chart-container
+      data-title="剩余电量趋势"
+      data-vt-name="chart-canvas">
+      <div class="range-group" id="range-group" role="group" aria-label="时间范围" slot="head">
+        {% for h, label in [(24, '24h'), (72, '3d'), (168, '7d'), (720, '30d')] %}
+          <button type="button" class="range-btn {% if hours == h %}active{% endif %}" data-hours="{{ h }}">{{ label }}</button>
+        {% endfor %}
+      </div>
+      <canvas id="chart"></canvas>
+    </dorm-chart-container>
+
+    <div class="grid grid-3">
+      <dorm-stat-card
+        data-label="本月费用"
+        data-foot="@¥0.500/kW·h"
+        data-empty="true">
+        <div class="card-value is-empty" id="stat-monthly-projection">¥<span id="stat-monthly-eqprice">—</span></div>
+      </dorm-stat-card>
+      <dorm-stat-card
+        data-label="1 小时"
+        data-foot="差值"
+        data-empty="{% if stats.hourly_used is none %}true{% else %}false{% endif %}">
+        <div class="card-value {% if stats.hourly_used is none %}is-empty{% endif %}" id="stat-hourly">
+          {% if stats.hourly_used is not none %}{{ '%.2f' % stats.hourly_used }} <span style="font-size:14px;color:var(--text-secondary)">kW·h</span>{% else %}—{% endif %}
+        </div>
+      </dorm-stat-card>
+      <dorm-stat-card
+        data-label="日均"
+        data-foot="窗口内"
+        data-empty="{% if stats.daily_avg is none %}true{% else %}false{% endif %}">
+        <div class="card-value {% if stats.daily_avg is none %}is-empty{% endif %}" id="stat-daily">
+          {% if stats.daily_avg is not none %}{{ '%.2f' % stats.daily_avg }} <span style="font-size:14px;color:var(--text-secondary)">kW·h</span>{% else %}—{% endif %}
+        </div>
+      </dorm-stat-card>
+      <dorm-stat-card
+        data-label="抄表"
+        data-foot="学校电表最近">
+        <div class="card-value" style="font-size:18px" id="stat-readtime">{{ stats.read_time or '—' }}</div>
+      </dorm-stat-card>
+      <!-- 隐藏的 stat-remain 让 JS 仍能找到 (R49 兼容) -->
+      <div class="last-update-hidden">
+        <span id="stat-remain">{{ '%.2f' % stats.remain if stats.remain is not none else '—' }}</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 历史趋势 — daily chart + records table                       -->
+  <!-- ============================================================ -->
+  <section id="section-history" class="section" data-section="history">
+    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
+      <div class="hero-label">历史趋势</div>
+      <div class="hero-meta" style="margin-top:8px">
+        {{ rows|length }} 条采集记录 · {{ daily_elec|length }} 天有效数据
+      </div>
+    </div>
+
+    <dorm-chart-container
+      data-title="每日用电曲线"
+      data-sub="近 30 天有效用电"
+      data-vt-name="chart-canvas-daily">
+      {% if daily_elec %}
+      <canvas id="chart-daily"></canvas>
+      {% else %}
+      <div class="empty-state">暂无每日用电数据</div>
+      {% endif %}
+    </dorm-chart-container>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h5 class="panel-title">采集记录</h5>
+        <span class="panel-sub" id="records-sub">共 {{ rows|length }} 条</span>
+      </div>
+
+      <div class="filter-bar" id="records-filter">
+        <label>起始时间</label>
+        <input type="datetime-local" id="records-start">
+        <label>截止时间</label>
+        <input type="datetime-local" id="records-end">
+        <button type="button" id="records-query" class="btn btn-primary">查询</button>
+        <button type="button" id="records-reset" class="btn btn-secondary">重置</button>
+        <span id="records-range-label" style="font-size:12px;color:var(--text-secondary);margin-left:auto"></span>
+      </div>
+
+      {% if rows %}
+      <dorm-records-table data-vt-name="records-table">
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>采集时间</th>
+                <th>抄表时间</th>
+                <th class="text-end">剩余电量 (kW·h)</th>
+              </tr>
+            </thead>
+            <tbody id="records-tbody">
+              {% for r in rows|reverse %}
+              <dorm-history-row
+                data-ts="{{ r.ts }}"
+                data-read-time="{{ r.read_time or '' }}"
+                data-remain="{{ r.remain if r.remain is not none else '' }}">
+              </dorm-history-row>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="records-empty" style="display:none">暂无采集记录</div>
+      </dorm-records-table>
+      {% else %}
+      <dorm-records-table data-vt-name="records-table">
+        <div class="empty-state" id="records-empty">暂无采集记录</div>
+      </dorm-records-table>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 违规与缴费 — list rows                                       -->
+  <!-- ============================================================ -->
+  <section id="section-finance" class="section" data-section="finance">
+    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
+      <div class="hero-label">违规与缴费</div>
+      <div class="hero-meta" style="margin-top:8px">
+        {{ violations|length }} 条违规 · {{ pay_history|length }} 条缴费
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h5 class="panel-title">违规记录</h5>
+        <span class="panel-sub">共 {{ violations|length }} 条</span>
+      </div>
+      {% if violations %}
+      <div>
+        {% for v in violations %}
+          {% set wg_power = v.wg_power %}
+          {% set tag_tone = 'danger' if (wg_power is not none and wg_power > 1000) else 'warning' %}
+          {% set tag_text = ('%.2f' % v.wg_power) ~ ' W' if v.wg_power is not none else '违规' %}
+        <dorm-list-row
+          data-title="{{ v.wg_reason or '违规' }}"
+          data-sub="{{ v.dt or '—' }}"
+          data-tag="{{ tag_text }}"
+          data-tag-tone="{{ tag_tone }}">
+        </dorm-list-row>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">暂无违规记录</div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h5 class="panel-title">缴费记录</h5>
+        <span class="panel-sub">共 {{ pay_history|length }} 条</span>
+      </div>
+      {% if pay_history %}
+      <div>
+        {% for p in pay_history %}
+          {% set fee_lower = (p.fee_type or '')|lower %}
+          {% set tag_tone = 'danger' if ('罚款' in fee_lower or '罚' in fee_lower) else '' %}
+          {% set value_text = ('¥%.2f' % p.money) if p.money is not none else '' %}
+          {% set value_empty = 'true' if p.money is none else 'false' %}
+        <dorm-list-row
+          data-title="{{ p.pay_type or p.fee_type or '缴费' }}"
+          data-sub="{{ p.dt or '—' }}"
+          data-tag="{{ p.fee_type or '缴费' }}"
+          data-tag-tone="{{ tag_tone }}"
+          data-value="{{ value_text }}"
+          data-value-empty="{{ value_empty }}">
+        </dorm-list-row>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">暂无缴费记录</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 实时电表 — meter-grid                                        -->
+  <!-- ============================================================ -->
+  <section id="section-meter" class="section" data-section="meter">
+    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
+      <div class="hero-label">实时电表</div>
+      <div class="hero-meta" style="margin-top:8px">
+        最近一次上报 · {{ run_status.update_dt if run_status else '—' }}
+      </div>
+      <div class="hero-meta" style="margin-top:8px;font-size:11px">每 30 秒自动刷新</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h5 class="panel-title">实时电表</h5>
+        <span class="panel-sub">最近一次上报</span>
+      </div>
+      {% if run_status %}
+      {% set rs_label = run_status.run_status or '—' %}
+      <div class="meter-grid">
+        <dorm-room-card data-label="电压">
+          <div class="card-value" id="meter-vol">
+            {% if run_status.vol is not none %}{{ '%.2f' % run_status.vol }} <span style="font-size:14px;color:var(--text-secondary)">V</span>{% else %}—{% endif %}
+          </div>
+        </dorm-room-card>
+        <dorm-room-card data-label="电流">
+          <div class="card-value" id="meter-cur">
+            {% if run_status.cur is not none %}{{ '%.2f' % run_status.cur }} <span style="font-size:14px;color:var(--text-secondary)">A</span>{% else %}—{% endif %}
+          </div>
+        </dorm-room-card>
+        <dorm-room-card data-label="有功功率">
+          <div class="card-value" id="meter-yggl">
+            {% if run_status.yggl is not none %}{{ '%.3f' % run_status.yggl }} <span style="font-size:14px;color:var(--text-secondary)">W</span>{% else %}—{% endif %}
+          </div>
+        </dorm-room-card>
+        <dorm-room-card
+          data-label="电表状态"
+          data-tone="{% if rs_label in ['在线', '正常', '通讯正常'] %}online{% elif rs_label == '—' %}warning{% else %}offline{% endif %}"
+          data-fontsize="small">
+          <div class="card-value" style="font-size:18px" id="meter-status-pill">{{ rs_label }}</div>
+        </dorm-room-card>
+        <dorm-room-card
+          data-label="最后上报时间"
+          data-fontsize="small"
+          style="grid-column:1 / -1">
+          <div class="card-value" style="font-size:18px" id="meter-update-dt">{{ run_status.update_dt or '—' }}</div>
+        </dorm-room-card>
+      </div>
+      {% else %}
+      <div class="empty-state">暂无电表数据</div>
+      {% endif %}
+    </div>
+  </section>
+</main>
+
+<!-- 隐藏的 #status-pill — setPill / setLastUpdate 仍能找到 -->
+<span id="status-pill" data-ts="{{ rows[-1].ts if rows else '' }}" style="display:none"></span>
+
+<div class="status-bar" id="status-bar" aria-live="polite">
+  <span style="display:inline-flex;align-items:center;gap:6px"><span class="status-dot" id="status-bar-dot"></span><span id="status-bar-text">连接中…</span></span>
+  <span id="status-bar-ts">最近采集 —</span>
+  <span class="spacer"></span>
+  <span><kbd>1</kbd>–<kbd>4</kbd> 切换 · <kbd>R</kbd> 刷新</span>
+  <span>v51b</span>
+</div>
+
+<div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+<script>
+window.__DASHBOARD_DATA__ = {
+  hours: {{ hours|tojson }},
+  rows: {{ rows|tojson }},
+  daily_elec: {{ daily_elec|tojson }},
+  initial_latest_ts: {{ (rows[-1].ts if rows else "")|tojson }},
+};
+</script>
+<!-- R66: Web Components — register before dashboard.js so it can use them. -->
+<script src="/static/js/components/dorm-stat-card.js"></script>
+<script src="/static/js/components/dorm-room-card.js"></script>
+<script src="/static/js/components/dorm-chart-container.js"></script>
+<script src="/static/js/components/dorm-history-row.js"></script>
+<script src="/static/js/components/dorm-records-table.js"></script>
+<script src="/static/js/components/dorm-list-row.js"></script>
+<script src="/static/js/components/dorm-toast.js"></script>
+<script src="/static/js/components/dorm-spinner.js"></script>
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

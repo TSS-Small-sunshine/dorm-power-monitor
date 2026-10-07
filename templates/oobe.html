@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>首次配置 — dorm-power-monitor</title>
+<link rel="stylesheet" href="/static/css/oobe.css">
+<meta name="csrf-token" content="">
+</head>
+<body data-step="{{ step }}">
+
+<div class="oobe-wrap">
+
+  <header class="oobe-header">
+    <div class="oobe-logo">⚡ dorm-power-monitor</div>
+    <div class="oobe-tagline">首次配置向导 · 共 6 步</div>
+  </header>
+
+  <nav class="oobe-progress" id="progress" aria-label="配置进度">
+    <div class="oobe-progress-dot" data-step="1"><span class="dot-num">1</span><span class="dot-label">欢迎</span></div>
+    <div class="oobe-progress-dot" data-step="2"><span class="dot-num">2</span><span class="dot-label">飞书</span></div>
+    <div class="oobe-progress-dot" data-step="3"><span class="dot-num">3</span><span class="dot-label">推送</span></div>
+    <div class="oobe-progress-dot" data-step="4"><span class="dot-num">4</span><span class="dot-label">计划</span></div>
+    <div class="oobe-progress-dot" data-step="5"><span class="dot-num">5</span><span class="dot-label">保留</span></div>
+    <div class="oobe-progress-dot" data-step="6"><span class="dot-num">6</span><span class="dot-label">账户</span></div>
+  </nav>
+
+  <main class="oobe-main" id="step_host">
+
+    <section class="oobe-step" data-step="1">
+      <h1>欢迎使用 dorm-power-monitor</h1>
+      <p class="oobe-lead">跟着 6 步向导完成首次配置,预计 3 分钟。</p>
+      <ul class="oobe-summary">
+        <li><strong>1. 飞书凭证</strong> — 飞书开放平台 App ID / Secret</li>
+        <li><strong>2. 推送 Webhook</strong> — 告警和报表的推送地址</li>
+        <li><strong>3. 定时计划</strong> — 抓取 cron 表达式 + 时区</li>
+        <li><strong>4. 数据保留</strong> — 历史保留天数 + 月备份份数</li>
+        <li><strong>5. Admin 账户</strong> — 创建管理员账号</li>
+      </ul>
+      <p class="oobe-hint">开始前准备好飞书机器人凭证 + webhook URL。</p>
+    </section>
+
+    <section class="oobe-step" data-step="2" hidden>
+      <h1>飞书凭证</h1>
+      <p class="oobe-lead">填写飞书开放平台的自建应用凭证 (用于调用 tenant_access_token)。</p>
+      <div class="oobe-field">
+        <label for="feishu_app_id">App ID</label>
+        <input id="feishu_app_id" type="text" autocomplete="off" placeholder="cli_xxxxxxxxxxxxxxxx">
+      </div>
+      <div class="oobe-field">
+        <label for="feishu_app_secret">App Secret</label>
+        <input id="feishu_app_secret" type="password" autocomplete="off" placeholder="...">
+      </div>
+      <div class="oobe-field">
+        <label for="feishu_verification_token">Verification Token (可选)</label>
+        <input id="feishu_verification_token" type="text" autocomplete="off">
+      </div>
+      <div class="oobe-field">
+        <label for="feishu_encrypt_key">Encrypt Key (可选)</label>
+        <input id="feishu_encrypt_key" type="text" autocomplete="off">
+      </div>
+      <button class="oobe-btn oobe-btn-secondary" id="feishu_test_btn" type="button">测试连接</button>
+      <div class="oobe-test-result" id="feishu_test_result"></div>
+    </section>
+
+    <section class="oobe-step" data-step="3" hidden>
+      <h1>推送 Webhook</h1>
+      <p class="oobe-lead">dorm-power-monitor 会把告警 / 日报 / 周报 / 月报推送到此 webhook。</p>
+      <div class="oobe-field">
+        <label for="webhook_url">Webhook URL</label>
+        <input id="webhook_url" type="url" autocomplete="off" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+        <small class="oobe-hint">允许的 host: <code>*.tssplus.top</code>, <code>localhost</code></small>
+      </div>
+      <div class="oobe-field">
+        <label for="webhook_secret">签名密钥 (可选)</label>
+        <input id="webhook_secret" type="password" autocomplete="off" placeholder="用于 X-Lark-Signature 校验">
+      </div>
+      <button class="oobe-btn oobe-btn-secondary" id="webhook_test_btn" type="button">测试推送</button>
+      <div class="oobe-test-result" id="webhook_test_result"></div>
+    </section>
+
+    <section class="oobe-step" data-step="4" hidden>
+      <h1>定时抓取计划</h1>
+      <p class="oobe-lead">5 字段 cron 表达式 (分 时 日 月 周),控制抓取频率。</p>
+      <div class="oobe-field">
+        <label for="cron_expr">Cron 表达式</label>
+        <input id="cron_expr" type="text" value="*/30 * * * *" autocomplete="off">
+        <small class="oobe-hint">默认 <code>*/30 * * * *</code> = 每 30 分钟一次</small>
+      </div>
+      <div class="oobe-field">
+        <label for="tz_select">时区</label>
+        <select id="tz_select">
+          <option value="Asia/Shanghai" selected>Asia/Shanghai (UTC+8)</option>
+          <option value="UTC">UTC</option>
+          <option value="Asia/Tokyo">Asia/Tokyo (UTC+9)</option>
+          <option value="Asia/Singapore">Asia/Singapore (UTC+8)</option>
+          <option value="America/New_York">America/New_York</option>
+          <option value="Europe/London">Europe/London</option>
+        </select>
+      </div>
+      <button class="oobe-btn oobe-btn-secondary" id="cron_test_btn" type="button">解析 cron</button>
+      <div class="oobe-test-result" id="cron_test_result"></div>
+    </section>
+
+    <section class="oobe-step" data-step="5" hidden>
+      <h1>数据保留</h1>
+      <p class="oobe-lead">历史采集记录的保留天数,以及月备份保留份数。</p>
+      <div class="oobe-field">
+        <label for="records_days">Records 保留天数</label>
+        <input id="records_days" type="number" min="5" max="3650" value="90">
+        <small class="oobe-hint">最少 5 天,默认 90</small>
+      </div>
+      <div class="oobe-field">
+        <label for="monthly_backups">月备份保留份数</label>
+        <input id="monthly_backups" type="number" min="1" max="36" value="12">
+        <small class="oobe-hint">默认 12 份</small>
+      </div>
+      <p class="oobe-hint">本步可使用默认值 — 跳过即可。</p>
+    </section>
+
+    <section class="oobe-step" data-step="6" hidden>
+      <h1>创建 Admin 账户</h1>
+      <p class="oobe-lead">这个账户将登录 dashboard 与 admin 后台。</p>
+      <div class="oobe-field">
+        <label for="admin_username">用户名</label>
+        <input id="admin_username" type="text" autocomplete="username" placeholder="admin">
+      </div>
+      <div class="oobe-field">
+        <label for="admin_password">密码</label>
+        <input id="admin_password" type="password" autocomplete="new-password">
+        <div class="oobe-strength" id="strength_meter" hidden>
+          <div class="oobe-strength-bar" id="strength_bar"></div>
+          <span class="oobe-strength-label" id="strength_label"></span>
+        </div>
+        <small class="oobe-hint">至少 8 字符,包含大小写字母 + 数字 + 特殊字符</small>
+      </div>
+      <div class="oobe-field">
+        <label for="admin_password_confirm">确认密码</label>
+        <input id="admin_password_confirm" type="password" autocomplete="new-password">
+      </div>
+    </section>
+
+    <section class="oobe-step" data-step="7" hidden>
+      <h1>设置完成 🎉</h1>
+      <p class="oobe-lead">dorm-power-monitor 已就绪。正在跳转 admin ...</p>
+    </section>
+
+  </main>
+
+  <nav class="oobe-actions" id="oobe_actions">
+    <button class="oobe-btn oobe-btn-ghost" id="prev_btn" type="button" hidden>← 上一步</button>
+    <button class="oobe-btn oobe-btn-primary" id="next_btn" type="button">下一步 →</button>
+    <button class="oobe-btn oobe-btn-secondary" id="skip_btn" type="button" hidden>使用默认值</button>
+    <button class="oobe-btn oobe-btn-primary" id="finish_btn" type="button" hidden>完成</button>
+  </nav>
+
+  <div class="oobe-toast-region" id="toast_region" aria-live="polite"></div>
+
+</div>
+
+<dorm-spinner id="global_spinner" hidden></dorm-spinner>
+
+<script src="/static/js/components/dorm-toast.js"></script>
+<script src="/static/js/components/dorm-spinner.js"></script>
+<script src="/static/js/oobe.js"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- R64 — Admin / Test page.
+     * One-shot scrape + one-shot push triggers.
+     * <dorm-spinner> + <dorm-toast> for inline feedback.
+     * Last-known scrape + webhook summary cards at the top. -->
+<html lang=zh><head>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name=csrf-token content="{{ csrf_token() }}">
+<title>测试 & 操作 · dorm-power-monitor</title>
+<link rel=stylesheet href="/static/css/admin.css">
+<script src="/static/js/components/dorm-stat-card.js"></script>
+<script src="/static/js/components/dorm-toast.js"></script>
+<script src="/static/js/components/dorm-spinner.js"></script>
+</head><body>
+
+<nav class="admin-nav" aria-label="admin nav">
+  <div class="admin-nav-inner">
+    <div class="brand">
+      <span class="brand-mark">⚙</span>
+      <span class="brand-name">Admin</span>
+      <span class="brand-user" id="admin-user-label"></span>
+    </div>
+    <div class="admin-tabs" role="tablist">
+      <a class="admin-tab" data-tab="users" href="/admin/users">用户</a>
+      <a class="admin-tab" data-tab="config" href="/admin/config">配置</a>
+      <a class="admin-tab" data-tab="test" href="/admin/test">测试</a>
+      <a class="admin-tab" data-tab="audit" href="/admin/audit">审计</a>
+    </div>
+    <div class="admin-actions">
+      <a class="icon-link" href="/">← 主面板</a>
+      <button class="icon-btn" id="logout-btn" type="button" title="退出登录">⎋</button>
+    </div>
+  </div>
+</nav>
+
+<main class="admin-main">
+  <header class="admin-header">
+    <h1>测试 & 操作</h1>
+    <p class="admin-sub">手动触发抓取或推送；两者都写入 <code>audit_log</code>。</p>
+  </header>
+
+  <section class="admin-section">
+    <div class="stat-grid">
+      <dorm-stat-card data-label="上次抓取" data-foot="最近一次成功">
+        <div class="card-value" id="stat-last-scrape">—</div>
+      </dorm-stat-card>
+      <dorm-stat-card data-label="webhook" data-foot="飞书机器人">
+        <div class="card-value" id="stat-webhook">—</div>
+      </dorm-stat-card>
+      <dorm-stat-card data-label="内部 token" data-foot="API / refresh">
+        <div class="card-value" id="stat-token">—</div>
+      </dorm-stat-card>
+    </div>
+  </section>
+
+  <section class="admin-section">
+    <h2><span class=ic>🧪</span>手动触发</h2>
+    <p class=hint>先点击「发送测试消息」确认 webhook 通，再用「立即抓取一次」验证整条数据通路。</p>
+    <div class=btn-row>
+      <button id=run-push class="btn-primary">
+        <dorm-spinner glyph="⏵" speed="900"></dorm-spinner><span>发送测试消息</span>
+      </button>
+      <button id=run-scrape class="btn-primary">
+        <dorm-spinner glyph="⟳" speed="800"></dorm-spinner><span>立即抓取一次</span>
+      </button>
+    </div>
+    <div id=action-result class=toast-slot></div>
+  </section>
+</main>
+
+<div class="toast-stack" id=toast-stack aria-live=polite></div>
+
+<script>
+window.__ADMIN_TEST_INITIAL__ = {
+  csrf_token: {{ csrf_token_value|tojson }},
+  current_user: {{ (current_user.username if current_user else "")|tojson }},
+  current_role: {{ (current_user.role if current_user else "")|tojson }},
+};
+</script>
+<script src="/static/js/admin_test.js"></script>
+</body></html>

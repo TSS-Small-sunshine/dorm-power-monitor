@@ -1,0 +1,780 @@
+:root {
+  --bg-page: #0a0a0b;
+  --bg-card: #131316;
+  --bg-elevated: #1a1a1e;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.14);
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-soft: rgba(99, 102, 241, 0.10);
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --online: #22c55e;
+  --offline: #ef4444;
+  --warning: #f59e0b;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05);
+  --shadow-hover: 0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* === Top nav ============================================== */
+.topnav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(10,10,11,0.8);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border);
+}
+.topnav-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.brand-mark {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 auto;
+}
+.tab {
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+.tab.active { color: var(--text-primary); background: var(--bg-elevated); }
+.nav-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.icon-btn {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.refresh-btn {
+  padding: 0 12px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+}
+.refresh-btn:hover { background: var(--accent-hover); }
+.refresh-btn.loading { pointer-events: none; opacity: 0.7; }
+.refresh-btn dorm-spinner { display: inline-block; transition: transform 0.6s; }
+.refresh-btn.loading dorm-spinner { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* === Main container ===================================== */
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+.section { display: none; }
+.section.active { display: block; }
+
+/* === Hero =============================================== */
+.hero {
+  padding: 32px 0 48px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 32px;
+}
+.hero-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.hero-value {
+  font-size: 64px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  letter-spacing: -2px;
+  line-height: 1;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.hero-unit {
+  font-size: 20px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-left: 8px;
+  font-family: var(--font-sans);
+}
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.hero-meta .meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--online);
+  box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
+}
+.status-dot.offline { background: var(--offline); box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
+.status-dot.warning { background: var(--warning); box-shadow: 0 0 0 3px rgba(245,158,11,0.15); }
+
+/* === Grid ================================================ */
+.grid {
+  display: grid;
+  gap: 16px;
+}
+.grid-3 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/* === Stat card ========================================== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.card-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.card-value {
+  font-size: 28px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+}
+.card-value.is-empty { color: var(--text-tertiary); }
+.card-foot {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  font-family: var(--font-mono);
+}
+
+/* === Chart panel ========================================= */
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+.panel-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.range-group {
+  display: inline-flex;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 1px;
+}
+.range-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  font-family: inherit;
+  font-weight: 500;
+}
+.range-btn:hover { color: var(--text-primary); }
+.range-btn.active { background: var(--accent); color: #fff; }
+.chart-wrap {
+  position: relative;
+  height: 280px;
+  width: 100%;
+}
+
+/* === Filter bar ========================================== */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.filter-bar input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color-scheme: dark;
+}
+.filter-bar label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  font-family: inherit;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary:hover { color: var(--text-primary); }
+
+/* === Table =============================================== */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.data-table th.text-end { text-align: right; }
+.data-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.data-table td.text-end {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.data-table td.ts {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.data-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+/* === List rows (finance / meter sections) ================= */
+.list-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.list-row:last-child { border-bottom: none; }
+.list-left { display: flex; flex-direction: column; gap: 4px; }
+.list-title { font-size: 13px; color: var(--text-primary); font-weight: 500; }
+.list-sub { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); }
+.list-right { display: flex; align-items: center; gap: 12px; }
+.list-value { font-size: 14px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+.list-value.is-empty { color: var(--text-tertiary); }
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--accent);
+  letter-spacing: 0.3px;
+}
+.tag.tag-warning { background: rgba(245,158,11,0.12); color: var(--warning); }
+.tag.tag-red { background: rgba(239,68,68,0.12); color: var(--offline); }
+
+/* === Meter grid (meter section) =========================== */
+.meter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+.meter-grid .card { padding: 16px 18px; }
+
+/* === Hidden helpers ====================================== */
+.last-update-hidden { display: none; }
+.pill { display: none; }
+.stat-readtime-hidden { display: none; }
+
+/* === Bottom status bar =================================== */
+.status-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 36px;
+  background: rgba(10,10,11,0.8);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  gap: 16px;
+}
+.status-bar .spacer { flex: 1; }
+.status-bar kbd {
+  background: rgba(99,102,241,0.12);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* === Toast ================================================ */
+.toast-container {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  max-width: 360px;
+  animation: slide-in 0.2s ease-out;
+}
+.toast.leaving { animation: slide-out 0.2s ease-in forwards; }
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slide-out { to { transform: translateX(100%); opacity: 0; } }
+.toast.success { border-left: 3px solid var(--online); }
+.toast.error { border-left: 3px solid var(--offline); }
+.toast.info { border-left: 3px solid var(--accent); }
+.toast-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+}
+
+/* === Mobile ============================================== */
+@media (max-width: 768px) {
+  .topnav-inner { padding: 10px 16px; flex-wrap: wrap; gap: 12px; }
+  .tabs { order: 3; width: 100%; justify-content: center; margin: 0; }
+  main { padding: 20px 16px 80px; }
+  .hero { padding: 20px 0 32px; }
+  .hero-value { font-size: 48px; }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .card { padding: 14px; }
+  .card-value { font-size: 22px; }
+  .panel { padding: 16px; }
+  .chart-wrap { height: 220px; }
+  .meter-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .hero-value { font-size: 40px; }
+  .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* ============================================================ */
+/* R66 — Web Components base styles                             */
+/* ============================================================ */
+dorm-stat-card,
+dorm-room-card,
+dorm-chart-container,
+dorm-records-table,
+dorm-history-row,
+dorm-list-row,
+dorm-toast,
+dorm-spinner {
+  display: block;
+}
+dorm-history-row { display: table-row; }
+dorm-spinner { display: inline-block; }
+
+/* ============================================================ */
+/* R66 — View Transitions API                                   */
+/* ============================================================ */
+/* Section switching — fade old / new content via VT API.       */
+.section.active { view-transition-name: tab-content; }
+::view-transition-old(tab-content) {
+  animation: vt-fade-out 0.18s ease-out forwards;
+}
+::view-transition-new(tab-content) {
+  animation: vt-fade-in 0.22s ease-in forwards;
+}
+
+/* Chart re-render — cross-fade between previous and new canvas. */
+::view-transition-old(chart-canvas),
+::view-transition-old(chart-canvas-daily) {
+  animation: vt-fade-out 0.18s ease-out forwards;
+}
+::view-transition-new(chart-canvas),
+::view-transition-new(chart-canvas-daily) {
+  animation: vt-fade-in 0.22s ease-in forwards;
+}
+
+/* Toast enter/exit — slide from bottom. */
+::view-transition-old(toast-stack),
+::view-transition-old(toast-list) {
+  animation: vt-toast-out 0.2s ease-in forwards;
+}
+::view-transition-new(toast-stack),
+::view-transition-new(toast-list) {
+  animation: vt-toast-in 0.2s ease-out forwards;
+}
+
+/* Records table re-render. */
+::view-transition-old(records-table),
+::view-transition-new(records-table) {
+  animation-duration: 0.2s;
+  animation-timing-function: ease-out;
+}
+
+@keyframes vt-fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes vt-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes vt-toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(20px); }
+}
+@keyframes vt-toast-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Reduce motion — disable VT animation. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* ============================================================ */
+/* R66 — View Transitions fallback                              */
+/* (browsers without document.startViewTransition)              */
+/* ============================================================ */
+@supports not (view-transition-name: none) {
+  /* Tab fade — covered by .section class toggle animation.       */
+  .section { animation-duration: 0.18s; animation-timing-function: ease-out; }
+  .section:not(.active) { animation: none; }
+  .section.active { animation: vt-fade-in 0.18s ease-out; }
+
+  /* Chart wrap — same cross-fade handled by Chart.js's own 350ms
+     duration so we don't override.                                */
+
+  /* Toast enter — keep slide-in keyframes from base .toast class. */
+}
+
+/* ============================================================ */
+/* R67 — Multi-device responsive (iPad / PC / Mobile)           */
+/* ============================================================
+   Breakpoints:
+     • Mobile  : max-width: 767px   (iPhone / Android phones)
+     • Tablet  : min-width: 768px and max-width: 1023px (iPad portrait)
+     • Desktop : min-width: 1024px and max-width: 1439px (laptop)
+     • Wide    : min-width: 1440px  (4K / external monitor)
+
+   Existing `.grid-3` is `repeat(4, 1fr)` (R51b).  We leave that
+   default for Desktop/Wide and collapse to 3 (tablet landscape),
+   2 (tablet portrait / small phones) and 1 (small phones) on the
+   mobile-first media queries below.
+
+   Tablet portrait flips room meter-grid to a single column so the
+   live voltage / current values have room to breathe without
+   horizontal scroll.
+
+   iPad landscape gets 4 columns to mimic desktop density.
+*/
+
+/* --- Tablet portrait (iPad, large phones) ------------------- */
+@media (min-width: 768px) and (max-width: 1023px) {
+  main { padding: 28px 20px 96px; max-width: 920px; }
+  .topnav-inner { padding: 10px 18px; gap: 16px; }
+  .hero { padding: 24px 0 36px; }
+  .hero-value { font-size: 56px; }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .panel { padding: 18px 20px; }
+  .chart-wrap { height: 320px; }
+  .meter-grid { grid-template-columns: 1fr; gap: 14px; }
+  /* Use auto-fit / minmax for stat-card grid so 2–3 cards stretch
+     to fill the row regardless of HTML count. */
+  .grid.grid-3 {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+}
+
+/* --- Tablet landscape (iPad horizontal) ---------------------- */
+@media (min-width: 768px) and (max-width: 1023px) and (orientation: landscape) {
+  .grid-3 { grid-template-columns: repeat(4, 1fr); }
+  .meter-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* --- Desktop (laptop, 1024–1439) ---------------------------- */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  main { max-width: 1200px; padding: 32px 28px 100px; }
+  .hero-value { font-size: 64px; }
+  .grid-3 { grid-template-columns: repeat(4, 1fr); }
+  .chart-wrap { height: 360px; }
+  .meter-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* --- Wide / 4K external monitor ----------------------------- */
+@media (min-width: 1440px) {
+  main { max-width: 1320px; padding: 40px 32px 120px; }
+  .hero-value { font-size: 72px; }
+  .grid-3 { grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .chart-wrap { height: 400px; }
+  .meter-grid { grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  /* Hero gets extra breathing room on wide screens. */
+  .hero { padding: 48px 0 64px; }
+  .panel { padding: 24px 32px; }
+}
+
+/* --- Hover-capable devices only (mouse / trackpad) ---------
+   Disable hover affordances on touch devices so taps don't get
+   "stuck" in the hover state when scrolling. */
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover,
+  .icon-btn:hover,
+  .refresh-btn:hover,
+  .btn:hover,
+  .range-btn:hover,
+  .toast-close:hover,
+  .data-table tbody tr:hover { cursor: pointer; }
+}
+@media (hover: none) {
+  /* Tap-only devices: make sure tap targets are at least 44px. */
+  .tab,
+  .icon-btn,
+  .refresh-btn,
+  .btn,
+  .range-btn,
+  .toast-close {
+    min-height: 44px;
+  }
+  /* Inputs need ≥16px font-size on iOS so the page does NOT zoom
+     on focus.  See https://web.dev/articles/visual-viewport */
+  .filter-bar input,
+  input[type="text"],
+  input[type="search"],
+  input[type="datetime-local"] {
+    font-size: 16px;
+    min-height: 44px;
+  }
+}
+
+/* --- Mobile (max-width: 767px) -------------------------------
+   R51b already had a (max-width: 768px) block; R67 narrows the
+   boundary to 767px so iPad portrait (768–1023) does NOT match
+   the mobile rules and instead falls into the Tablet block above.
+   That gives iPad users the denser tablet layout instead of the
+   cramped phone layout. */
+@media (max-width: 767px) {
+  body { font-size: 13px; }
+  main { padding: 16px 12px 96px; }
+  .topnav-inner { padding: 8px 12px; flex-wrap: wrap; gap: 10px; }
+  .tabs { order: 3; width: 100%; justify-content: flex-start; margin: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab { padding: 8px 12px; min-height: 44px; font-size: 13px; }
+  .nav-actions { gap: 6px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .refresh-btn { height: 44px; padding: 0 14px; font-size: 13px; }
+
+  .hero { padding: 20px 0 28px; margin-bottom: 20px; }
+  .hero-value { font-size: 44px; letter-spacing: -1.5px; }
+  .hero-meta { font-size: 12px; gap: 10px; }
+
+  .grid-3 { grid-template-columns: 1fr; gap: 12px; }
+  .card { padding: 14px 14px; }
+  .card-value { font-size: 22px; }
+
+  .panel { padding: 14px; margin-bottom: 12px; }
+  .panel-head { gap: 8px; margin-bottom: 12px; }
+  .chart-wrap { height: 240px; }
+
+  .meter-grid { grid-template-columns: 1fr; gap: 12px; }
+
+  .filter-bar { gap: 8px; }
+  .filter-bar input { font-size: 16px; min-height: 44px; padding: 10px 12px; }
+  .btn { min-height: 44px; padding: 8px 14px; }
+
+  .data-table { font-size: 12px; }
+  .data-table th,
+  .data-table td { padding: 8px 10px; }
+
+  .toast-container { top: auto; bottom: 96px; right: 12px; left: 12px; }
+  .toast { min-width: 0; max-width: none; font-size: 13px; }
+
+  /* Disable backdrop-filter on mobile — kills scroll perf on
+     low-end Android.  Fall back to a flat translucent color. */
+  .topnav,
+  .status-bar,
+  .toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-page); }
+}
+
+/* --- Small phones (≤480px) ---------------------------------- */
+@media (max-width: 480px) {
+  .hero-value { font-size: 36px; }
+  .hero-unit { font-size: 16px; }
+  .card-value { font-size: 20px; }
+  main { padding: 12px 10px 80px; }
+}
+
+/* --- iOS safe-area — PWA installed on iPhone X+ ------------- */
+@supports (padding: max(0px, env(safe-area-inset-top))) {
+  .topnav { padding-top: env(safe-area-inset-top); }
+  .status-bar { padding-bottom: env(safe-area-inset-bottom); height: calc(36px + env(safe-area-inset-bottom)); }
+  main { padding-left: max(24px, env(safe-area-inset-left)); padding-right: max(24px, env(safe-area-inset-right)); }
+  @media (max-width: 767px) {
+    main { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  }
+}
+
+/* --- Reduced motion: kill View Transitions, spin animations -- */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+  .section { animation: none !important; }
+  .refresh-btn.loading dorm-spinner { animation: none !important; }
+  .toast,
+  .toast.leaving { animation: none !important; }
+  * { transition-duration: 0s !important; animation-duration: 0s !important; }
+}
+
+/* --- Progressive enhancement: backdrop-filter fallback ------
+   Browsers without backdrop-filter (e.g. older Firefox builds)
+   get a flat dark color instead of the see-through blur. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topnav,
+  .status-bar,
+  .toast { background: var(--bg-page); }
+}
+
+/* --- High-density displays: throttle chart canvas DPR --------
+   Chart.js reads window.devicePixelRatio at boot.  On Retina phones
+   that quadruples canvas pixels and tanks FPS during scroll.  We
+   tell the canvas element to cap pixel density via the
+   devicePixelRatio override — dashboard.js can pick this up via
+   getComputedStyle on the document root. */
+:root { --chart-dpr-cap: 2; }
+@media (max-width: 767px) { :root { --chart-dpr-cap: 1; } }

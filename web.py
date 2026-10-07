@@ -1,4 +1,4 @@
-"""web.py — Round 43 documented.
+"""web.py — Round 64 documented.
 
 Flask dashboard + JSON API + Feishu inbound endpoint.  Single Flask
 app serves 4 user-facing routes and 1 bot endpoint; same module is
@@ -14,6 +14,7 @@ Pillow-backed card renderer).
   * ``/healthz`` (R26a) — deep health check (db / school / feishu).
   * OOBE wizard (R34B) — first-run /api/oobe/* setup.
   * ``/feishu/event`` (R3) — inbound webhook dispatcher.
+  * R64 — 5 admin pages + 5 admin JSON APIs + login UI + CSRF.
 
 数据流 / Data flow:
   browser (HTML / fetch)  <-> web.py <-> db helpers <-> records.db
@@ -41,6 +42,9 @@ Round history:
   * R39   - backfill UI
   * R41   - monthly_projection 算法 fix（用 last-first 而非累加）
   * R42   - _read_eqprice fallback chain (meta→env→0.5)
+  * R62   - templates/ + static/ split + import-time _load_template
+  * R63   - session-cookie auth (users / sessions / lockout / audit_log)
+  * R64   - 5 admin pages + 5 admin APIs + login UI + CSRF protection
 
 The original per-route docstring follows below for reference.
 
@@ -67,6 +71,17 @@ Exposes:
                     probe.
   POST /feishu/event  Feishu bot inbound events (url_verification + commands)
   GET  /feishu/event  url_verification challenge echo (used during URL save)
+  GET  /login         R64 — login form
+  GET  /admin         R64 — admin landing (redirects to /admin/config)
+  GET  /admin/users   R64 — user CRUD page
+  GET  /admin/config  R64 — scrape / push / password config page
+  GET  /admin/test    R64 — test-scrape / test-push page
+  GET  /admin/audit   R64 — audit_log viewer
+  POST/PUT/DELETE /api/admin/users[/<id>]  R64 — user CRUD
+  GET/PUT /api/admin/config                 R64 — system config JSON
+  GET  /api/admin/audit                     R64 — audit_log paginated
+  POST /api/admin/test-scrape               R64 — manual scrape trigger
+  POST /api/admin/test-push                 R64 — manual webhook test
 """
 from __future__ import annotations
 
@@ -86,8 +101,11 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from flask import Flask, Response, jsonify, redirect, render_template_string, request
+from flask import Flask, Response, jsonify, redirect, render_template_string, request, session
 
+import auth
+from auth import require_auth
+from auth import require_csrf
 import config
 import db
 import feishu_bot
@@ -125,6 +143,80 @@ _DAILY_CHART_MAX_KWH = 50.0
 
 app = Flask(__name__)
 logger = logging.getLogger("web")
+
+# Round 63 — wire session-cookie auth into Flask.
+#   - SECRET_KEY is read from FLASK_SECRET_KEY (.env).  ``auth.flask_secret_key``
+#     generates a random one at import time and stashes it into os.environ
+#     so subsequent restarts reuse the same value (existing signed cookies
+#     stay valid across process restarts).
+#   - ``SESSION_COOKIE_HTTPONLY=True`` blocks JS access to the cookie
+#     (mitigates XSS-driven session theft).
+#   - ``SESSION_COOKIE_SAMESITE='Lax'`` is the right balance: the cookie
+#     rides on top-level GET navigations but NOT on cross-site POST
+#     (mitigates CSRF on /api/auth/* POSTs).
+#   - ``PERMANENT_SESSION_LIFETIME`` aligns with ``auth.DEFAULT_SESSION_HOURS``
+#     so Flask's cookie expiration matches the server-side session row.
+#   - ``app.config['JSON_AS_ASCII'] = False`` keeps non-ASCII usernames
+#     (Chinese / emoji) readable in error messages.
+app.secret_key = auth.flask_secret_key()
+# R69 — default to Secure cookie (HTTPS-only).  Local plain-HTTP dev
+# can flip ``DORM_COOKIE_SECURE=0`` in .env to keep the cookie
+# rideable on http://127.0.0.1:5000.
+_cookie_secure = os.environ.get("DORM_COOKIE_SECURE", "1") == "1"
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=_cookie_secure,  # NEW — R69
+    PERMANENT_SESSION_LIFETIME=auth.DEFAULT_SESSION_HOURS * 3600,  # seconds
+    JSON_AS_ASCII=False,
+)
+
+
+# ---------------------------------------------------------------------------
+# Round 64 — CSRF cookie propagation.
+#
+# ``auth.csrf_cookie_token()`` stashes a transient ``make_response``
+# object on ``flask.g._csrf_cookie_response`` whenever it mints a new
+# token.  This ``after_request`` hook copies the ``Set-Cookie`` header
+# from that stash onto the real outgoing response so the browser
+# receives ``dorm_csrf`` on the very first GET that triggers a fresh
+# token.  Once planted, the cookie rides on subsequent requests (Lax
+# SameSite) so the front-end's ``fetch`` wrapper can echo it back as
+# ``X-CSRF-Token`` on every mutating call.
+# ---------------------------------------------------------------------------
+@app.after_request
+def _propagate_csrf_cookie(response):
+    """Copy the staged CSRF Set-Cookie header onto the real response."""
+    try:
+        from flask import g
+        staged = getattr(g, "_csrf_cookie_response", None)
+        if staged is not None:
+            cookie_header = staged.headers.get("Set-Cookie")
+            if cookie_header:
+                response.headers.add("Set-Cookie", cookie_header)
+    except Exception:  # pragma: no cover — never break the response path
+        pass
+    return response
+
+
+# Round 64 — Jinja context processor so every template can render
+# ``<meta name="csrf-token" content="{{ csrf_token() }}">`` without
+# importing the auth module directly.  Keeps the templates free of
+# Python-side dependencies.
+@app.context_processor
+def _inject_csrf_token():
+    return {"csrf_token": auth.csrf_token}
+
+# Round 63 — bootstrap: run db.init() so the 4 new auth tables
+# (users / sessions / failed_attempts / audit_log) exist before any
+# auth helper touches them.  Then ensure_initial_admin() seeds the
+# first admin user when ``users`` is empty AND
+# ``AUTH_INITIAL_ADMIN_PASSWORD`` is set in .env.
+#
+# This call is idempotent (CREATE TABLE IF NOT EXISTS) and safe on
+# existing deployments — see db/_legacy.py:_SCHEMA.
+db.init()
+auth.ensure_initial_admin()
 
 DEFAULT_HOURS = 24
 ALLOWED_HOURS = (24, 72, 168, 720)
@@ -558,1544 +650,44 @@ def _build_round2_context() -> dict:
     }
 
 
-INDEX_HTML = """<!doctype html>
-<!-- R51b — preview_v2 minimal modern (Linear / Vercel style) + R49 backend integration -->
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>电费助手 · 实时概览</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>
-:root {
-  --bg-page: #0a0a0b;
-  --bg-card: #131316;
-  --bg-elevated: #1a1a1e;
-  --border: rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.14);
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-soft: rgba(99, 102, 241, 0.10);
-  --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --online: #22c55e;
-  --offline: #ef4444;
-  --warning: #f59e0b;
-  --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05);
-  --shadow-hover: 0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
-}
+# R62 — HTML/CSS/JS moved to templates/ + static/.  Python loads each
+# Jinja-bearing template once at module import time and keeps using
+# render_template_string(...) so the route handlers stay unchanged.
+# A future R63 can flip these to render_template(...) + an explicit
+# ``app.template_folder`` if we want Flask's own loader caching.
+def _load_template(name: str) -> str:
+    """Read templates/<name> from disk; called once at module import."""
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "templates", name
+    )
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+INDEX_HTML = _load_template("dashboard.html")
 
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-body {
-  font-family: var(--font-sans);
-  background: var(--bg-page);
-  color: var(--text-primary);
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
-}
-
-/* === Top nav ============================================== */
-.topnav {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background: rgba(10,10,11,0.8);
-  backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--border);
-}
-.topnav-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 12px 24px;
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-}
-.brand-mark {
-  width: 22px; height: 22px;
-  border-radius: 6px;
-  background: var(--accent);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-}
-.tabs {
-  display: flex;
-  gap: 4px;
-  margin: 0 auto;
-}
-.tab {
-  padding: 6px 12px;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
-.tab.active { color: var(--text-primary); background: var(--bg-elevated); }
-.nav-actions {
-  display: flex; align-items: center; gap: 8px;
-}
-.icon-btn {
-  width: 32px; height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-}
-.icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
-.refresh-btn {
-  padding: 0 12px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: inherit;
-}
-.refresh-btn:hover { background: var(--accent-hover); }
-.refresh-btn.loading { pointer-events: none; opacity: 0.7; }
-.refresh-btn .spin { display: inline-block; transition: transform 0.6s; }
-.refresh-btn.loading .spin { animation: spin 1s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-/* === Main container ===================================== */
-main {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 32px 24px 80px;
-}
-.section { display: none; }
-.section.active { display: block; }
-
-/* === Hero =============================================== */
-.hero {
-  padding: 32px 0 48px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 32px;
-}
-.hero-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-.hero-value {
-  font-size: 64px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  letter-spacing: -2px;
-  line-height: 1;
-  color: var(--text-primary);
-  margin-bottom: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.hero-unit {
-  font-size: 20px;
-  color: var(--text-secondary);
-  font-weight: 500;
-  margin-left: 8px;
-  font-family: var(--font-sans);
-}
-.hero-meta {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.hero-meta .meta-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.status-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--online);
-  box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
-}
-.status-dot.offline { background: var(--offline); box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
-.status-dot.warning { background: var(--warning); box-shadow: 0 0 0 3px rgba(245,158,11,0.15); }
-
-/* === Grid ================================================ */
-.grid {
-  display: grid;
-  gap: 16px;
-}
-.grid-3 {
-  grid-template-columns: repeat(4, 1fr);
-}
-
-/* === Stat card ========================================== */
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 18px;
-}
-.card-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 500;
-  margin-bottom: 6px;
-}
-.card-value {
-  font-size: 28px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.5px;
-}
-.card-value.is-empty { color: var(--text-tertiary); }
-.card-foot {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-top: 4px;
-  font-family: var(--font-mono);
-}
-
-/* === Chart panel ========================================= */
-.panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px 24px;
-  margin-bottom: 16px;
-}
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.panel-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--text-primary);
-}
-.panel-sub {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-}
-.range-group {
-  display: inline-flex;
-  background: var(--bg-elevated);
-  border-radius: 8px;
-  padding: 2px;
-  gap: 1px;
-}
-.range-btn {
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  border-radius: 6px;
-  font-family: inherit;
-  font-weight: 500;
-}
-.range-btn:hover { color: var(--text-primary); }
-.range-btn.active { background: var(--accent); color: #fff; }
-.chart-wrap {
-  position: relative;
-  height: 280px;
-  width: 100%;
-}
-
-/* === Filter bar ========================================== */
-.filter-bar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-.filter-bar input {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-family: var(--font-mono);
-  color-scheme: dark;
-}
-.filter-bar label {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.btn {
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  font-family: inherit;
-  background: transparent;
-  color: var(--text-secondary);
-}
-.btn-primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-secondary:hover { color: var(--text-primary); }
-
-/* === Table =============================================== */
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-.data-table th {
-  text-align: left;
-  padding: 8px 12px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 500;
-  border-bottom: 1px solid var(--border);
-}
-.data-table th.text-end { text-align: right; }
-.data-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-primary);
-}
-.data-table td.text-end {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-weight: 500;
-}
-.data-table td.ts {
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.data-table tbody tr:hover { background: rgba(255,255,255,0.02); }
-
-.empty-state {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--text-tertiary);
-  font-size: 13px;
-}
-
-/* === List rows (finance / meter sections) ================= */
-.list-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.list-row:last-child { border-bottom: none; }
-.list-left { display: flex; flex-direction: column; gap: 4px; }
-.list-title { font-size: 13px; color: var(--text-primary); font-weight: 500; }
-.list-sub { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); }
-.list-right { display: flex; align-items: center; gap: 12px; }
-.list-value { font-size: 14px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
-.list-value.is-empty { color: var(--text-tertiary); }
-.tag {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 500;
-  background: var(--accent-soft);
-  color: var(--accent);
-  letter-spacing: 0.3px;
-}
-.tag.tag-warning { background: rgba(245,158,11,0.12); color: var(--warning); }
-.tag.tag-red { background: rgba(239,68,68,0.12); color: var(--offline); }
-
-/* === Meter grid (meter section) =========================== */
-.meter-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-}
-.meter-grid .card { padding: 16px 18px; }
-
-/* === Hidden helpers ====================================== */
-.last-update-hidden { display: none; }
-.pill { display: none; }
-.stat-readtime-hidden { display: none; }
-
-/* === Bottom status bar =================================== */
-.status-bar {
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  height: 36px;
-  background: rgba(10,10,11,0.8);
-  backdrop-filter: blur(16px);
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 24px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  gap: 16px;
-}
-.status-bar .spacer { flex: 1; }
-.status-bar kbd {
-  background: rgba(99,102,241,0.12);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-/* === Toast ================================================ */
-.toast-container {
-  position: fixed;
-  top: 80px;
-  right: 24px;
-  z-index: 300;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  padding: 12px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 200px;
-  max-width: 360px;
-  animation: slide-in 0.2s ease-out;
-}
-.toast.leaving { animation: slide-out 0.2s ease-in forwards; }
-@keyframes slide-in {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
-@keyframes slide-out { to { transform: translateX(100%); opacity: 0; } }
-.toast.success { border-left: 3px solid var(--online); }
-.toast.error { border-left: 3px solid var(--offline); }
-.toast.info { border-left: 3px solid var(--accent); }
-.toast-close {
-  margin-left: auto;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 16px;
-  padding: 0;
-  width: 18px;
-  height: 18px;
-}
-
-/* === Mobile ============================================== */
-@media (max-width: 768px) {
-  .topnav-inner { padding: 10px 16px; flex-wrap: wrap; gap: 12px; }
-  .tabs { order: 3; width: 100%; justify-content: center; margin: 0; }
-  main { padding: 20px 16px 80px; }
-  .hero { padding: 20px 0 32px; }
-  .hero-value { font-size: 48px; }
-  .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
-  .card { padding: 14px; }
-  .card-value { font-size: 22px; }
-  .panel { padding: 16px; }
-  .chart-wrap { height: 220px; }
-  .meter-grid { grid-template-columns: 1fr; }
-}
-@media (max-width: 480px) {
-  .hero-value { font-size: 40px; }
-  .grid-3 { grid-template-columns: 1fr; }
-}
-</style>
-</head>
-<body>
-
-<nav class="topnav">
-  <div class="topnav-inner">
-    <div class="brand">
-      <span class="brand-mark">⚡</span>
-      <span>电费助手</span>
-    </div>
-    <div class="tabs">
-      <button type="button" class="tab active" data-section="overview">概览</button>
-      <button type="button" class="tab" data-section="history">历史</button>
-      <button type="button" class="tab" data-section="finance">违规</button>
-      <button type="button" class="tab" data-section="meter">电表</button>
-    </div>
-    <div class="nav-actions">
-      <button id="theme-toggle" class="icon-btn" type="button" aria-label="主题">🎨</button>
-      <button id="refresh-btn" class="refresh-btn" type="button" aria-label="刷新数据">
-        <span class="spin">⟳</span><span>刷新</span>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<main>
-  <!-- ============================================================ -->
-  <!-- 概览 — preview_v2 主视觉 (hero + chart + 4 stat cards)        -->
-  <!-- ============================================================ -->
-  <section id="section-overview" class="section active" data-section="overview">
-    <div class="hero">
-      <div class="hero-label">剩余电量</div>
-      <div class="hero-value">
-        {{ stats.remain if stats.remain is not none else '—' }}<span class="hero-unit">kW·h</span>
-      </div>
-      <div class="hero-meta">
-        <span class="meta-item"><span class="status-dot" id="hero-status-dot"></span><span id="hero-status-text">已连接</span></span>
-        <span class="meta-item">抄表 {{ stats.read_time or '—' }}</span>
-        <span class="meta-item" id="last-update">{{ initialLatestTs }}</span>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">剩余电量趋势</h5>
-        <div class="range-group" id="range-group" role="group" aria-label="时间范围">
-          {% for h, label in [(24, '24h'), (72, '3d'), (168, '7d'), (720, '30d')] %}
-            <button type="button" class="range-btn {% if hours == h %}active{% endif %}" data-hours="{{ h }}">{{ label }}</button>
-          {% endfor %}
-        </div>
-      </div>
-      <div class="chart-wrap">
-        <canvas id="chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid grid-3">
-      <div class="card" id="card-monthly-projection">
-        <div class="card-label">本月费用</div>
-        <div class="card-value is-empty" id="stat-monthly-projection">¥<span id="stat-monthly-eqprice">—</span></div>
-        <div class="card-foot" id="stat-monthly-detail">@¥0.500/kW·h</div>
-      </div>
-      <div class="card">
-        <div class="card-label">1 小时</div>
-        <div class="card-value {% if stats.hourly_used is none %}is-empty{% endif %}" id="stat-hourly">
-          {% if stats.hourly_used is not none %}{{ '%.2f' % stats.hourly_used }} <span style="font-size:14px;color:var(--text-secondary)">kW·h</span>{% else %}—{% endif %}
-        </div>
-        <div class="card-foot">差值</div>
-      </div>
-      <div class="card">
-        <div class="card-label">日均</div>
-        <div class="card-value {% if stats.daily_avg is none %}is-empty{% endif %}" id="stat-daily">
-          {% if stats.daily_avg is not none %}{{ '%.2f' % stats.daily_avg }} <span style="font-size:14px;color:var(--text-secondary)">kW·h</span>{% else %}—{% endif %}
-        </div>
-        <div class="card-foot">窗口内</div>
-      </div>
-      <div class="card">
-        <div class="card-label">抄表</div>
-        <div class="card-value" style="font-size:18px" id="stat-readtime">{{ stats.read_time or '—' }}</div>
-        <div class="card-foot">学校电表最近</div>
-      </div>
-      <!-- 隐藏的 stat-remain 让 JS 仍能找到 (R49 兼容) -->
-      <div class="last-update-hidden">
-        <span id="stat-remain">{{ '%.2f' % stats.remain if stats.remain is not none else '—' }}</span>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================ -->
-  <!-- 历史趋势 — daily chart + records table                       -->
-  <!-- ============================================================ -->
-  <section id="section-history" class="section" data-section="history">
-    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
-      <div class="hero-label">历史趋势</div>
-      <div class="hero-meta" style="margin-top:8px">
-        {{ rows|length }} 条采集记录 · {{ daily_elec|length }} 天有效数据
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">每日用电曲线</h5>
-        <span class="panel-sub">近 30 天有效用电</span>
-      </div>
-      {% if daily_elec %}
-      <div class="chart-wrap">
-        <canvas id="chart-daily"></canvas>
-      </div>
-      {% else %}
-      <div class="empty-state">暂无每日用电数据</div>
-      {% endif %}
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">采集记录</h5>
-        <span class="panel-sub" id="records-sub">共 {{ rows|length }} 条</span>
-      </div>
-
-      <div class="filter-bar" id="records-filter">
-        <label>起始时间</label>
-        <input type="datetime-local" id="records-start">
-        <label>截止时间</label>
-        <input type="datetime-local" id="records-end">
-        <button type="button" id="records-query" class="btn btn-primary">查询</button>
-        <button type="button" id="records-reset" class="btn btn-secondary">重置</button>
-        <span id="records-range-label" style="font-size:12px;color:var(--text-secondary);margin-left:auto"></span>
-      </div>
-
-      {% if rows %}
-      <div style="overflow-x:auto">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>采集时间</th>
-              <th>抄表时间</th>
-              <th class="text-end">剩余电量 (kW·h)</th>
-            </tr>
-          </thead>
-          <tbody id="records-tbody">
-            {% for r in rows|reverse %}
-            <tr>
-              <td class="ts">{{ r.ts }}</td>
-              <td class="ts">{{ r.read_time or '—' }}</td>
-              <td class="text-end">
-                {% if r.remain is not none %}{{ '%.2f' % r.remain }}{% else %}—{% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="empty-state" id="records-empty" style="display:none">暂无采集记录</div>
-      {% else %}
-      <div class="empty-state" id="records-empty">暂无采集记录</div>
-      {% endif %}
-    </div>
-  </section>
-
-  <!-- ============================================================ -->
-  <!-- 违规与缴费 — list rows                                       -->
-  <!-- ============================================================ -->
-  <section id="section-finance" class="section" data-section="finance">
-    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
-      <div class="hero-label">违规与缴费</div>
-      <div class="hero-meta" style="margin-top:8px">
-        {{ violations|length }} 条违规 · {{ pay_history|length }} 条缴费
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">违规记录</h5>
-        <span class="panel-sub">共 {{ violations|length }} 条</span>
-      </div>
-      {% if violations %}
-      <div>
-        {% for v in violations %}
-          {% set wg_power = v.wg_power %}
-          {% set tag_class = 'tag-red' if (wg_power is not none and wg_power > 1000) else 'tag-warning' %}
-        <div class="list-row">
-          <div class="list-left">
-            <span class="list-title">{{ v.wg_reason or '违规' }}</span>
-            <span class="list-sub">{{ v.dt or '—' }}</span>
-          </div>
-          <div class="list-right">
-            <span class="tag {{ tag_class }}">
-              {% if v.wg_power is not none %}{{ '%.2f' % v.wg_power }} W{% else %}违规{% endif %}
-            </span>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="empty-state">暂无违规记录</div>
-      {% endif %}
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">缴费记录</h5>
-        <span class="panel-sub">共 {{ pay_history|length }} 条</span>
-      </div>
-      {% if pay_history %}
-      <div>
-        {% for p in pay_history %}
-          {% set fee_lower = (p.fee_type or '')|lower %}
-          {% set tag_class = 'tag-red' if '罚款' in fee_lower or '罚' in fee_lower else '' %}
-        <div class="list-row">
-          <div class="list-left">
-            <span class="list-title">{{ p.pay_type or p.fee_type or '缴费' }}</span>
-            <span class="list-sub">{{ p.dt or '—' }}</span>
-          </div>
-          <div class="list-right">
-            <span class="tag {{ tag_class }}">{{ p.fee_type or '缴费' }}</span>
-            <span class="list-value {% if p.money is none %}is-empty{% endif %}">
-              {% if p.money is not none %}¥{{ '%.2f' % p.money }}{% else %}—{% endif %}
-            </span>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div class="empty-state">暂无缴费记录</div>
-      {% endif %}
-    </div>
-  </section>
-
-  <!-- ============================================================ -->
-  <!-- 实时电表 — meter-grid                                        -->
-  <!-- ============================================================ -->
-  <section id="section-meter" class="section" data-section="meter">
-    <div class="hero" style="padding:32px 0 32px;border-bottom:none;margin-bottom:24px">
-      <div class="hero-label">实时电表</div>
-      <div class="hero-meta" style="margin-top:8px">
-        最近一次上报 · {{ run_status.update_dt if run_status else '—' }}
-      </div>
-      <div class="hero-meta" style="margin-top:8px;font-size:11px">每 30 秒自动刷新</div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <h5 class="panel-title">实时电表</h5>
-        <span class="panel-sub">最近一次上报</span>
-      </div>
-      {% if run_status %}
-      <div class="meter-grid">
-        <div class="card">
-          <div class="card-label">电压</div>
-          <div class="card-value" id="meter-vol">
-            {% if run_status.vol is not none %}{{ '%.2f' % run_status.vol }} <span style="font-size:14px;color:var(--text-secondary)">V</span>{% else %}—{% endif %}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-label">电流</div>
-          <div class="card-value" id="meter-cur">
-            {% if run_status.cur is not none %}{{ '%.2f' % run_status.cur }} <span style="font-size:14px;color:var(--text-secondary)">A</span>{% else %}—{% endif %}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-label">有功功率</div>
-          <div class="card-value" id="meter-yggl">
-            {% if run_status.yggl is not none %}{{ '%.3f' % run_status.yggl }} <span style="font-size:14px;color:var(--text-secondary)">W</span>{% else %}—{% endif %}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-label">电表状态</div>
-          {% set rs_label = run_status.run_status or '—' %}
-          <div class="card-value" style="font-size:18px" id="meter-status-pill">{{ rs_label }}</div>
-        </div>
-        <div class="card" style="grid-column:1 / -1">
-          <div class="card-label">最后上报时间</div>
-          <div class="card-value" style="font-size:18px" id="meter-update-dt">{{ run_status.update_dt or '—' }}</div>
-        </div>
-      </div>
-      {% else %}
-      <div class="empty-state">暂无电表数据</div>
-      {% endif %}
-    </div>
-  </section>
-</main>
-
-<!-- 隐藏的 #status-pill — setPill / setLastUpdate 仍能找到 -->
-<span id="status-pill" data-ts="{{ rows[-1].ts if rows else '' }}" style="display:none"></span>
-
-<div class="status-bar" id="status-bar" aria-live="polite">
-  <span style="display:inline-flex;align-items:center;gap:6px"><span class="status-dot" id="status-bar-dot"></span><span id="status-bar-text">连接中…</span></span>
-  <span id="status-bar-ts">最近采集 —</span>
-  <span class="spacer"></span>
-  <span><kbd>1</kbd>–<kbd>4</kbd> 切换 · <kbd>R</kbd> 刷新</span>
-  <span>v51b</span>
-</div>
-
-<div class="toast-container" id="toast-container" aria-live="polite"></div>
-
-<script>
-(function () {
-  /* === 模板变量注入 ============================================ */
-  var currentHours = {{ hours|tojson }};
-  var initialRows = {{ rows|tojson }};
-  var initialDaily = {{ daily_elec|tojson }};
-  var initialLatestTs = {{ (rows[-1].ts if rows else '')|tojson }};
-  var chartInstance = null;
-  var dailyChartInstance = null;
-  var pollFailStreak = 0;
-  var STORAGE_KEY = 'dorm-power-monitor.section';
-
-  /* === 工具函数 =============================================== */
-  function fmtAxisLabel(raw) {
-    if (!raw) return '';
-    var m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-    if (m) return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
-    return raw;
-  }
-  function readCssVar(name, fallback) {
-    var v = getComputedStyle(document.documentElement).getPropertyValue(name);
-    v = (v || '').trim();
-    return v || fallback;
-  }
-  function setStatText(el, v, unit) {
-    if (!el) return;
-    el.classList.remove('is-empty');
-    if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) {
-      el.classList.add('is-empty');
-      el.textContent = '—';
-      return;
-    }
-    var text;
-    if (typeof v === 'number') {
-      text = v.toFixed(2) + (unit ? ' <span style="font-size:14px;color:var(--text-secondary)">' + unit + '</span>' : '');
-    } else {
-      text = String(v);
-    }
-    el.innerHTML = text;
-  }
-  function setPill() {
-    var pill = document.getElementById('status-pill');
-    if (!pill) return;
-    var tsRaw = pill.getAttribute('data-ts') || '';
-    // R48 — ts is NAIVE LOCAL (CST, "YYYY-MM-DD HH:MM:SS"), append +08:00
-    // so JS Date parses it as Asia/Shanghai wall clock independent of host TZ.
-    var last = tsRaw ? new Date(tsRaw.replace(' ', 'T') + '+08:00') : null;
-    var isOnline = false;
-    if (last && !isNaN(last.getTime())) {
-      var ageSec = (Date.now() - last.getTime()) / 1000;
-      isOnline = ageSec >= 0 && ageSec < 7200;
-    }
-    var heroDot = document.getElementById('hero-status-dot');
-    var heroText = document.getElementById('hero-status-text');
-    if (heroDot) {
-      heroDot.classList.remove('offline', 'warning');
-      if (!isOnline) heroDot.classList.add('offline');
-    }
-    if (heroText) {
-      heroText.textContent = isOnline ? '已连接' : '已断开';
-    }
-    var barDot = document.getElementById('status-bar-dot');
-    var barText = document.getElementById('status-bar-text');
-    var barTs = document.getElementById('status-bar-ts');
-    if (barDot && barText) {
-      barDot.classList.remove('offline', 'warning');
-      if (!isOnline) barDot.classList.add('offline');
-      barText.textContent = isOnline ? '已连接' : '已离线';
-    }
-    if (barTs) {
-      barTs.textContent = tsRaw ? ('最近采集 ' + tsRaw) : '最近采集 —';
-    }
-  }
-  function setLastUpdate(tsRaw) {
-    var el = document.getElementById('last-update');
-    if (!el) return;
-    el.textContent = tsRaw ? tsRaw : '—';
-  }
-
-  /* === Toast 通知 ============================================== */
-  function showToast(message, kind, duration) {
-    kind = kind || 'info';
-    duration = (typeof duration === 'number') ? duration : 3000;
-    var container = document.getElementById('toast-container');
-    if (!container) return;
-    var toast = document.createElement('div');
-    toast.className = 'toast ' + kind;
-    var icon = (kind === 'success') ? '✓' : (kind === 'error') ? '✕' : 'ⓘ';
-    toast.innerHTML =
-      '<span style="font-size:16px">' + icon + '</span>' +
-      '<span></span>' +
-      '<button class="toast-close" type="button" aria-label="关闭">×</button>';
-    toast.querySelector('span:nth-of-type(2)').textContent = message;
-    container.appendChild(toast);
-    var close = function () {
-      toast.classList.add('leaving');
-      setTimeout(function () {
-        if (toast.parentNode) toast.parentNode.removeChild(toast);
-      }, 200);
-    };
-    toast.querySelector('.toast-close').addEventListener('click', close);
-    if (duration > 0) setTimeout(close, duration);
-  }
-
-  /* === Chart.js 初始化 ========================================== */
-  function buildChart(rows) {
-    var canvas = document.getElementById('chart');
-    if (!canvas) return;
-    var labels = (rows || []).map(function (r) { return fmtAxisLabel(r.ts); });
-    var data = (rows || []).map(function (r) {
-      return (r.remain === null || r.remain === undefined) ? null : Number(r.remain);
-    });
-    var rawTsList = (rows || []).map(function (r) {
-      return r && r.ts ? String(r.ts) : '';
-    });
-    if (chartInstance) {
-      chartInstance.data.labels = labels;
-      chartInstance.data.datasets[0].data = data;
-      chartInstance.update();
-      return;
-    }
-    var textSecondary = readCssVar('--text-secondary', '#a1a1aa');
-    var borderColor = readCssVar('--border', 'rgba(255,255,255,0.08)');
-    var tooltipBg = readCssVar('--bg-card', '#131316');
-    var tooltipFg = readCssVar('--text-primary', '#fafafa');
-    chartInstance = new Chart(canvas.getContext('2d'), {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: '剩余电量 (kW·h)',
-          data: data,
-          borderColor: '#6366f1',
-          backgroundColor: function (context) {
-            var chart = context.chart;
-            var c = chart.ctx;
-            var area = chart.chartArea;
-            if (!area) return 'rgba(99,102,241,0.20)';
-            var g = c.createLinearGradient(0, area.top, 0, area.bottom);
-            g.addColorStop(0, 'rgba(99,102,241,0.20)');
-            g.addColorStop(1, 'rgba(99,102,241,0)');
-            return g;
-          },
-          fill: true,
-          tension: 0.3,
-          borderWidth: 1.5,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          pointBackgroundColor: '#6366f1',
-          pointBorderColor: tooltipBg,
-          pointBorderWidth: 1.5,
-          spanGaps: true,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 350 },
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: tooltipBg,
-            borderColor: borderColor,
-            borderWidth: 1,
-            titleColor: '#a1a1aa',
-            bodyColor: '#fafafa',
-            padding: 10,
-            displayColors: false,
-            callbacks: {
-              title: function (items) {
-                if (!items || !items.length) return '';
-                var idx = items[0].dataIndex;
-                return rawTsList[idx] || labels[idx] || '';
-              },
-              label: function (item) {
-                var v = item.parsed.y;
-                return (v == null ? '—' : v.toFixed(2) + ' kW·h');
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            grid: { display: false },
-            ticks: { color: '#71717a', font: { size: 10 }, maxRotation: 0, autoSkip: true, autoSkipPadding: 20 },
-            border: { color: 'rgba(255,255,255,0.05)' }
-          },
-          y: {
-            grid: { color: 'rgba(255,255,255,0.04)' },
-            ticks: { color: '#71717a', font: { size: 10 }, callback: function (v) { return v; } },
-            border: { display: false }
-          }
-        }
-      }
-    });
-  }
-
-  function buildDailyChart(rows) {
-    var canvas = document.getElementById('chart-daily');
-    if (!canvas) return;
-    var labels = (rows || []).map(function (r) { return fmtAxisLabel(r.dt); });
-    var data = (rows || []).map(function (r) {
-      if (r.used_today === null || r.used_today === undefined) return null;
-      var v = Number(r.used_today);
-      return (isNaN(v) || v < 0) ? null : v;
-    });
-    var rawDtList = (rows || []).map(function (r) {
-      return r && r.dt ? String(r.dt) : '';
-    });
-    if (dailyChartInstance) {
-      dailyChartInstance.data.labels = labels;
-      dailyChartInstance.data.datasets[0].data = data;
-      dailyChartInstance.update();
-      return;
-    }
-    var textSecondary = readCssVar('--text-secondary', '#a1a1aa');
-    var borderColor = readCssVar('--border', 'rgba(255,255,255,0.08)');
-    var tooltipBg = readCssVar('--bg-card', '#131316');
-    var tooltipFg = readCssVar('--text-primary', '#fafafa');
-    dailyChartInstance = new Chart(canvas.getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: '每日用电 (kW·h)',
-          data: data,
-          borderRadius: 6,
-          borderSkipped: false,
-          backgroundColor: function (context) {
-            var chart = context.chart;
-            var c = chart.ctx;
-            var area = chart.chartArea;
-            if (!area) return 'rgba(99,102,241,0.6)';
-            var g = c.createLinearGradient(0, area.top, 0, area.bottom);
-            g.addColorStop(0, 'rgba(99,102,241,0.85)');
-            g.addColorStop(1, 'rgba(99,102,241,0.45)');
-            return g;
-          },
-          borderColor: 'rgba(99,102,241,0.9)',
-          borderWidth: 1,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 350 },
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: tooltipBg,
-            borderColor: borderColor,
-            borderWidth: 1,
-            titleColor: '#a1a1aa',
-            bodyColor: '#fafafa',
-            padding: 10,
-            displayColors: false,
-            callbacks: {
-              title: function (items) {
-                if (!items || !items.length) return '';
-                var idx = items[0].dataIndex;
-                return rawDtList[idx] || labels[idx] || '';
-              },
-              label: function (item) {
-                var v = item.parsed.y;
-                return (v == null ? '—' : v.toFixed(2) + ' kW·h');
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            grid: { display: false },
-            ticks: { color: '#71717a', font: { size: 10 }, maxRotation: 0, autoSkipPadding: 16 },
-            border: { color: borderColor }
-          },
-          y: {
-            beginAtZero: true,
-            grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false },
-            border: { display: false },
-            ticks: { color: '#71717a', font: { size: 10 }, callback: function (v) { return Number(v).toFixed(1); } }
-          }
-        }
-      }
-    });
-  }
-
-  /* === 月度预测卡片更新 (Round 26b) ============================ */
-  function updateMonthlyProjection(p) {
-    var valEl = document.getElementById('stat-monthly-projection');
-    var priceEl = document.getElementById('stat-monthly-eqprice');
-    var detailEl = document.getElementById('stat-monthly-detail');
-    if (!valEl) return;
-    var mp = (p && typeof p.monthly_projection === 'number') ? p.monthly_projection : null;
-    var eqprice = p && p.eqprice;
-    if (mp === null) {
-      valEl.classList.add('is-empty');
-      var bd = (p && p.monthly_breakdown) || {};
-      var usedKwh = (bd.used_kwh != null) ? Number(bd.used_kwh) : null;
-      var eqpriceNum = (p && p.eqprice != null) ? Number(p.eqprice) : null;
-      if (usedKwh != null && usedKwh > 0 && eqpriceNum != null && eqpriceNum > 0) {
-        valEl.innerHTML = '¥' + (usedKwh * eqpriceNum).toFixed(2);
-        if (priceEl) priceEl.textContent = '';
-        if (detailEl) detailEl.textContent = '已用 ' + usedKwh.toFixed(2) + ' kW·h（日均数据积累中）';
-      } else {
-        valEl.innerHTML = '¥—';
-        if (priceEl) priceEl.textContent = '';
-        if (detailEl) detailEl.textContent = '日均数据积累中';
-      }
-    } else {
-      valEl.classList.remove('is-empty');
-      valEl.innerHTML = '¥' + mp.toFixed(2) +
-        (eqprice ? ' <span style="font-size:14px;color:var(--text-secondary)">@¥' + Number(eqprice).toFixed(3) + '/kW·h</span>' : '');
-      if (detailEl) {
-        var bd = (p && p.monthly_breakdown) || {};
-        var used = (bd.used_kwh != null) ? bd.used_kwh.toFixed(2) : '0';
-        var avg = (bd.avg_daily != null) ? bd.avg_daily.toFixed(2) : '—';
-        var left = bd.days_left != null ? bd.days_left : '—';
-        detailEl.textContent = '已用 ' + used + ' · 日均 ' + avg + ' · 剩 ' + left + ' 天';
-      }
-    }
-  }
-
-  /* === Skeleton 切换 ========================================= */
-  function showSkeletons(on) {
-    var cards = document.querySelectorAll('.card');
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].style.transition = 'opacity 0.2s';
-      cards[i].style.opacity = on ? '0.5' : '1';
-    }
-  }
-  function showForceRefreshStatus(message) {
-    var btn = document.getElementById('refresh-btn');
-    if (!btn) return;
-    if (message) {
-      btn.disabled = true;
-      btn.classList.add('loading');
-    } else {
-      btn.disabled = false;
-      btn.classList.remove('loading');
-    }
-  }
-
-  /* === 电表 cell 更新 ========================================== */
-  function updateMeter(rs) {
-    var setCell = function (id, text, unit, decimals) {
-      var el = document.getElementById(id);
-      if (!el) return;
-      if (text === null || text === undefined || (typeof text === 'number' && isNaN(text))) {
-        el.innerHTML = '—';
-        el.classList.add('is-empty');
-      } else {
-        el.classList.remove('is-empty');
-        el.innerHTML = Number(text).toFixed(decimals == null ? 2 : decimals) +
-          (unit ? ' <span style="font-size:14px;color:var(--text-secondary)">' + unit + '</span>' : '');
-      }
-    };
-    setCell('meter-vol', rs.vol, 'V', 2);
-    setCell('meter-cur', rs.cur, 'A', 2);
-    setCell('meter-yggl', rs.yggl, 'W', 3);
-    var pillEl = document.getElementById('meter-status-pill');
-    if (pillEl) {
-      var label = rs.run_status || '—';
-      pillEl.textContent = label;
-      if (label === '在线' || label === '正常' || label === '通讯正常') {
-        pillEl.style.color = 'var(--online)';
-      } else if (label === '—') {
-        pillEl.style.color = 'var(--warning)';
-      } else {
-        pillEl.style.color = 'var(--offline)';
-      }
-    }
-    var updEl = document.getElementById('meter-update-dt');
-    if (updEl) {
-      updEl.textContent = rs.update_dt || '—';
-      updEl.classList.toggle('is-empty', !rs.update_dt);
-    }
-  }
-
-  /* === 数据流编排 ============================================== */
-  function updateAll(payload) {
-    var stats = payload.stats || {};
-    var rows = payload.rows || [];
-    var pill = document.getElementById('status-pill');
-    if (pill) {
-      pill.setAttribute('data-ts', rows.length ? (rows[rows.length - 1].ts || '') : '');
-      setPill();
-    }
-    var latestTs = rows.length ? rows[rows.length - 1].ts : initialLatestTs;
-    setLastUpdate(latestTs);
-    setStatText(document.getElementById('stat-remain'), stats.remain, 'kW·h');
-    setStatText(document.getElementById('stat-hourly'), stats.hourly_used, 'kW·h');
-    setStatText(document.getElementById('stat-readtime'), stats.read_time || null);
-    setStatText(document.getElementById('stat-daily'), stats.daily_avg, 'kW·h');
-    buildChart(rows);
-  }
-
-  function manualRefresh(hours) {
-    if (typeof hours === 'number') currentHours = hours;
-    var btn = document.getElementById('refresh-btn');
-    if (btn) {
-      btn.disabled = true;
-      btn.classList.add('loading');
-    }
-    fetch('/api/data?hours=' + currentHours)
-      .then(function (r) { return r.json(); })
-      .then(function (payload) { updateAll(payload); })
-      .catch(function (e) {
-        if (typeof showToast === 'function') {
-          showToast('刷新失败: ' + (e && e.message || '网络错误'), 'error');
-        }
-      })
-      .then(function () {
-        if (btn) {
-          btn.disabled = false;
-          btn.classList.remove('loading');
-        }
-      });
-  }
-
-  /* === Force refresh (Round 26b) ================================= */
-  function forceRefresh(triggeredByUser) {
-    showSkeletons(true);
-    showForceRefreshStatus('🔄 正在抓取最新数据…');
-    if (triggeredByUser && typeof showToast === 'function') showToast('刷新中…', 'info', 1500);
-
-    var refreshDone = function () {
-      return Promise.all([
-        fetch('/api/live').then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        }),
-        fetch('/api/data?hours=' + currentHours).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        }),
-      ]).then(function (results) {
-        var live = results[0] || {};
-        var data = results[1] || {};
-        applyLiveUpdate(live);
-        if (data && data.rows) buildChart(data.rows);
-      });
-    };
-
-    fetch('/api/refresh', { method: 'POST' })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-      .then(function (resp) {
-        if (!resp.ok || !resp.j || resp.j.ok !== true) {
-          var errMsg = (resp.j && resp.j.error) ? resp.j.error : 'HTTP 失败';
-          throw new Error(errMsg);
-        }
-        if (typeof showToast === 'function') {
-          showToast(
-            '✓ 抓取完成 · ' + (resp.j.scrape_status || 'ok') +
-            (resp.j.ts ? ' · ' + resp.j.ts : ''),
-            'success', 2500
-          );
-        }
-        return refreshDone();
-      })
-      .catch(function (e) {
-        if (typeof showToast === 'function') {
-          showToast('抓取失败,使用最近缓存: ' + (e && e.message || ''), 'error', 4000);
-        }
-        return refreshDone().catch(function () { /* ignore */ });
-      })
-      .then(function () {
-        showSkeletons(false);
-        showForceRefreshStatus(null);
-      });
-  }
-
-  /* === 30 秒轮询 /api/live ===================================== */
-  function autorefreshLive() {
-    fetch('/api/live')
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function (payload) {
-        pollFailStreak = 0;
-        applyLiveUpdate(payload);
-      })
-      .catch(function (e) {
-        pollFailStreak += 1;
-        if (pollFailStreak === 3 && typeof showToast === 'function') {
-          showToast('连续 3 次自动刷新失败: ' + (e && e.message || ''), 'error', 5000);
-        }
-      });
-  }
-  setInterval(autorefreshLive, 30000);
-
-  function applyLiveUpdate(payload) {
-    if (!payload) return;
-    var pill = document.getElementById('status-pill');
-    if (pill && payload.latest_ts) {
-      pill.setAttribute('data-ts', payload.latest_ts);
-      setPill();
-    }
-    if (payload.latest_ts) setLastUpdate(payload.latest_ts);
-    var stats = payload.stats || {};
-    setStatText(document.getElementById('stat-remain'), stats.remain, 'kW·h');
-    setStatText(document.getElementById('stat-hourly'), stats.hourly_used, 'kW·h');
-    setStatText(document.getElementById('stat-readtime'), stats.read_time || null);
-    setStatText(document.getElementById('stat-daily'), stats.daily_avg, 'kW·h');
-    updateMonthlyProjection(payload);
-    if (payload.run_status) updateMeter(payload.run_status);
-    fetch('/api/data?hours=' + currentHours)
-      .then(function (r) { return r.json(); })
-      .then(function (p) { if (p && p.rows) buildChart(p.rows); })
-      .catch(function () { /* swallow chart refresh errors */ });
-  }
-
-  /* === Section 切换（顶 nav）==================================== */
-  function activateSection(section) {
-    if (!section) return;
-    document.querySelectorAll('[data-section]').forEach(function (el) {
-      el.classList.toggle('active', el.getAttribute('data-section') === section);
-    });
-    requestAnimationFrame(function () {
-      var activeSection = document.querySelector('.section.active');
-      if (!activeSection) return;
-      if (chartInstance && activeSection.contains(document.getElementById('chart'))) {
-        chartInstance.resize();
-      }
-      if (dailyChartInstance && activeSection.contains(document.getElementById('chart-daily'))) {
-        dailyChartInstance.resize();
-      }
-    });
-    try { localStorage.setItem(STORAGE_KEY, section); } catch (e) { /* ignore */ }
-  }
-  document.body.addEventListener('click', function (e) {
-    var trigger = e.target.closest('.tab');
-    if (!trigger) return;
-    e.preventDefault();
-    var section = trigger.getAttribute('data-section');
-    if (section) activateSection(section);
-  });
-
-  /* === 时间范围按钮 ============================================ */
-  document.querySelectorAll('.range-btn').forEach(function (b) {
-    b.addEventListener('click', function () {
-      var h = parseInt(b.getAttribute('data-hours'), 10);
-      if (!h) return;
-      document.querySelectorAll('.range-btn').forEach(function (x) {
-        x.classList.remove('active');
-      });
-      b.classList.add('active');
-      manualRefresh(h);
-    });
-  });
-
-  /* === Round 33d: 采集记录时间范围过滤 =========================== */
-  (function () {
-    var startInput = document.getElementById('records-start');
-    var endInput = document.getElementById('records-end');
-    var queryBtn = document.getElementById('records-query');
-    var resetBtn = document.getElementById('records-reset');
-    var subLabel = document.getElementById('records-sub');
-    var rangeLabel = document.getElementById('records-range-label');
-    var tbody = document.getElementById('records-tbody');
-    var emptyState = document.getElementById('records-empty');
-
-    if (!startInput || !endInput || !queryBtn) return;
-
-    function pad(n) { return n < 10 ? '0' + n : '' + n; }
-    function toLocalISO(d) {
-      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
-        + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-    }
-
-    (function setDefaultRange() {
-      var now = new Date();
-      var startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      startInput.value = toLocalISO(startOfDay);
-      endInput.value = toLocalISO(now);
-    })();
-
-    function escapeHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function renderRows(rows) {
-      if (!tbody) {
-        if (subLabel) subLabel.textContent = '共 ' + (rows ? rows.length : 0) + ' 条';
-        return;
-      }
-      if (!rows || !rows.length) {
-        tbody.innerHTML = '';
-        if (emptyState) emptyState.style.display = 'block';
-        if (subLabel) subLabel.textContent = '共 0 条';
-        return;
-      }
-      if (emptyState) emptyState.style.display = 'none';
-      var html = '';
-      rows.forEach(function (r) {
-        var remain = (r.remain != null && !isNaN(r.remain))
-          ? Number(r.remain).toFixed(2) : '—';
-        html += '<tr>'
-          + '<td class="ts">' + escapeHtml(r.ts || '—') + '</td>'
-          + '<td class="ts">' + escapeHtml(r.read_time || '—') + '</td>'
-          + '<td class="text-end">' + remain + '</td>'
-          + '</tr>';
-      });
-      tbody.innerHTML = html;
-      if (subLabel) subLabel.textContent = '共 ' + rows.length + ' 条';
-    }
-
-    function queryRecords() {
-      var s = startInput.value;
-      var e = endInput.value;
-      if (!s || !e) {
-        if (typeof showToast === 'function') {
-          showToast('请填写起始和截止时间', 'error');
-        }
-        return;
-      }
-      // R46 — compare as Asia/Shanghai wall clock (datetime-local is TZ-naive)
-      if (new Date(s + '+08:00') > new Date(e + '+08:00')) {
-        if (typeof showToast === 'function') {
-          showToast('起始时间不能晚于截止时间', 'error');
-        }
-        return;
-      }
-      // R46 — replace T with space (records.ts stored as "YYYY-MM-DD HH:MM:SS")
-      var startStr = (s.length === 16 ? s + ':00' : s).replace('T', ' ');
-      var endStr = (e.length === 16 ? e + ':59' : e).replace('T', ' ');
-      var url = '/api/data?start=' + encodeURIComponent(startStr)
-              + '&end=' + encodeURIComponent(endStr);
-      if (rangeLabel) {
-        rangeLabel.textContent = '查询范围：' + s.replace('T', ' ') + ' ~ ' + e.replace('T', ' ');
-      }
-      queryBtn.disabled = true;
-      fetch(url).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (payload) {
-        renderRows((payload && payload.rows) || []);
-      }).catch(function (err) {
-        if (typeof showToast === 'function') {
-          showToast('查询失败：' + (err && err.message || '网络错误'), 'error');
-        }
-        renderRows([]);
-      }).then(function () {
-        queryBtn.disabled = false;
-      });
-    }
-
-    function resetRecords() {
-      var now = new Date();
-      var startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-      startInput.value = toLocalISO(startOfDay);
-      endInput.value = toLocalISO(now);
-      queryRecords();
-    }
-
-    queryBtn.addEventListener('click', queryRecords);
-    if (resetBtn) resetBtn.addEventListener('click', resetRecords);
-    [startInput, endInput].forEach(function (el) {
-      el.addEventListener('change', function () {
-        if (startInput.value && endInput.value) queryRecords();
-      });
-    });
-    queryRecords();
-  })();
-
-  /* === 手动刷新按钮 ============================================ */
-  var refreshBtn = document.getElementById('refresh-btn');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', function () { forceRefresh(true); });
-  }
-
-  /* === 主题切换器 (Round 27) — preview_v2 仅深色,保留 applyTheme 钩子 === */
-  function applyTheme(themeKey, accent) {
-    accent = accent || '#6366f1';
-    var root = document.documentElement;
-    root.style.setProperty('--accent', accent);
-    root.style.setProperty('--accent-soft', 'rgba(99,102,241,0.10)');
-    root.style.setProperty('--accent-hover', '#818cf8');
-    try {
-      if (chartInstance) chartInstance.update('none');
-      if (dailyChartInstance) dailyChartInstance.update('none');
-    } catch (e) { /* ignore */ }
-  }
-
-  var themeToggle = document.getElementById('theme-toggle');
-  if (themeToggle) {
-    themeToggle.addEventListener('click', function () {
-      var current = document.documentElement.style.getPropertyValue('--accent') || '#6366f1';
-      applyTheme('dark', current === '#6366f1' ? '#22c55e' : '#6366f1');
-    });
-  }
-
-  /* === 键盘快捷键 ============================================ */
-  document.addEventListener('keydown', function (e) {
-    var tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    var key = e.key;
-    var sectionMap = { '1': 'overview', '2': 'history', '3': 'finance', '4': 'meter' };
-    if (sectionMap[key]) {
-      e.preventDefault();
-      activateSection(sectionMap[key]);
-      return;
-    }
-    if (key === 'r' || key === 'R') {
-      e.preventDefault();
-      manualRefresh();
-      return;
-    }
-  });
-
-  /* === 初始化 ================================================ */
-  setPill();
-  setLastUpdate(initialLatestTs);
-  buildChart(initialRows);
-  buildDailyChart(initialDaily);
-  showSkeletons(true);
-  forceRefresh(false);
-  try {
-    var saved = localStorage.getItem(STORAGE_KEY);
-    if (saved && saved !== 'overview') activateSection(saved);
-  } catch (e) { /* ignore */ }
-})();
-</script>
-</body>
-</html>"""
 
 
 @app.route("/")
 def index():
     # Round 34B — OOBE redirect.  Until the user finishes the 6-step
-    # wizard we send them to /admin/oobe so the dashboard doesn't
-    # render with broken / empty meta values.  This is the only
-    # public-facing route; once OOBE is done, /admin/* becomes the
+    # wizard we send them to /oobe so the dashboard doesn't render
+    # with broken / empty meta values.  This is the only public-
+    # facing route; once OOBE is done, /admin/* becomes the
     # password-protected one for ongoing tweaks.
-    if db.get_meta("oobe_completed") != "1":
-        return redirect("/admin/oobe")
+    #
+    # Round 65 — the canonical wizard entry is now /oobe (not
+    # /admin/oobe).  The decision logic reads BOTH the legacy
+    # ``db.get_meta('oobe_completed')`` AND the R65
+    # ``session['oobe_complete']`` flag so a user who completed
+    # the wizard in this session does not get bounced back into it
+    # after a refresh.
+    oobe_done = (
+        session.get("oobe_complete") is True
+        or db.get_meta("oobe_completed") == "1"
+    )
+    if not oobe_done:
+        return redirect("/oobe")
 
     hours = int(request.args.get("hours", DEFAULT_HOURS))
     rows = query(hours)
@@ -2208,6 +800,8 @@ def api_live():
 
 
 @app.route("/api/refresh", methods=["POST"])
+@require_auth(role='admin')
+@require_csrf
 def api_refresh():
     """Force an immediate school scrape from the browser.
 
@@ -2444,6 +1038,104 @@ def feishu_event_post():
 def feishu_event_get():
     """Feishu also probes with GET on URL save.  Mirror the same challenge response."""
     return jsonify({"challenge": request.args.get("challenge", "")})
+
+
+# ---------------------------------------------------------------------------
+# Round 63 — Session-cookie auth API.
+# ---------------------------------------------------------------------------
+#
+# Three routes form the user-facing auth surface:
+#   * POST /api/auth/login  { username, password }
+#         → 200 { ok: true,  user: {...} } on success
+#         → 401 { ok: false, error: "locked" } during lockout
+#         → 401 { ok: false, error: "invalid_credentials" } on bad creds
+#         → 400 { ok: false, error: "..." } on missing / malformed body
+#   * POST /api/auth/logout
+#         → 200 { ok: true }  (no-op if not logged in; revokes the
+#                                current session row + clears the cookie)
+#   * GET  /api/auth/me
+#         → 200 { user: {...} } on success
+#         → 401 { error: "not_authenticated" } otherwise
+#
+# Lockout + audit + session creation are all handled inside
+# ``auth.attempt_login`` so web.py stays a thin HTTP wrapper.
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """Round 63 — login endpoint with lockout + audit + session creation."""
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        # Return a 400 so the frontend can distinguish "missing field"
+        # from "bad credentials" (which is 401).  We deliberately do
+        # NOT 401 here — that would mask programmer errors in the JS.
+        return jsonify({
+            "ok": False,
+            "error": "username and password required",
+        }), 400
+    ip = auth.client_ip()
+    ua = request.headers.get("User-Agent", "") or ""
+    result = auth.attempt_login(username, password, ip=ip, user_agent=ua)
+    if result.get("ok"):
+        # Plant the session token in Flask's signed cookie.  The token
+        # is the opaque secret; the cookie is its tamper-evident envelope.
+        session[auth.SESSION_COOKIE_NAME] = result["token"]
+        session.permanent = True
+        # ``result`` carries the user payload but not the token itself
+        # (so a leaked /api/auth/login response does not leak the
+        # token if SameSite fails for some reason).  The cookie is the
+        # only thing the client should use to authenticate.
+        return jsonify({
+            "ok": True,
+            "user": result["user"],
+        })
+    # Failure path — lockout vs invalid_credentials.
+    err = result.get("error", "invalid_credentials")
+    return jsonify({"ok": False, "error": err}), 401
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    """Round 63 — revoke the current session + clear the cookie."""
+    token = session.get(auth.SESSION_COOKIE_NAME)
+    if token:
+        auth.revoke_session(token)
+    session.pop(auth.SESSION_COOKIE_NAME, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def api_auth_me():
+    """Round 63 — return the current user or 401.
+
+    Used by the front-end to decide whether to show the login form.
+    The full User object minus ``password_hash`` is returned so the
+    dashboard can label the role without an extra round-trip.
+
+    Round 64 — also returns the CSRF token so the front-end can
+    mirror it onto every subsequent ``fetch``.  The token is planted
+    in a non-HttpOnly ``dorm_csrf`` cookie (via :func:`auth.csrf_cookie_token`)
+    AND echoed in the JSON body so callers can choose either path
+    (cookie read by JS, body read for the rare case the cookie was
+    stripped by an intermediate proxy).
+    """
+    user = auth.get_current_user()
+    if user is None:
+        # Still plant a CSRF cookie so the login page can echo one
+        # back without an extra round-trip.
+        auth.csrf_cookie_token()
+        return jsonify({"error": "not_authenticated"}), 401
+    csrf = auth.csrf_cookie_token()
+    return jsonify({
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "last_login_at": user.last_login_at,
+        },
+        "csrf_token": csrf,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2700,583 +1392,591 @@ def _parse_school_url(url: str) -> dict:
     return result
 
 
-# OOBE_HTML / ADMIN_HTML are intentionally compact — they render via
-# render_template_string with no Jinja includes, just inline CSS.
-OOBE_HTML = """<!doctype html>
-<html lang=zh><head>
-<meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>首次配置 — dorm-power-monitor</title>
-<style>
-:root {
-  --bg: #0f172a; --bg2: #1e293b; --fg: #f8fafc; --muted: #94a3b8;
-  --accent: #38bdf8; --accent2: #6366f1;
-  --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
-  --radius: 14px;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0; min-height: 100vh;
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-  color: var(--fg); padding: 24px;
-}
-.wrap { max-width: 720px; margin: 0 auto; }
-.logo {
-  font-size: 22px; font-weight: 700; margin-bottom: 18px;
-  background: linear-gradient(120deg, var(--accent), var(--accent2));
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-.progress {
-  display: flex; gap: 6px; margin-bottom: 24px;
-}
-.progress div {
-  flex: 1; height: 6px; border-radius: 3px;
-  background: var(--bg2); transition: background .3s;
-}
-.progress div.active { background: var(--accent); }
-.progress div.done   { background: var(--accent2); }
-.card {
-  background: rgba(30,41,59,.7); backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,.08); border-radius: var(--radius);
-  padding: 28px; margin-bottom: 16px;
-}
-h1 { margin: 0 0 14px; font-size: 24px; }
-h2 { margin: 18px 0 10px; font-size: 16px; color: var(--muted); font-weight: 500; }
-label { display: block; margin: 14px 0 6px; font-size: 14px; color: var(--muted); }
-input[type=text], input[type=password], input[type=time] {
-  width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #334155;
-  background: var(--bg); color: var(--fg); font-size: 14px;
-}
-button {
-  padding: 10px 18px; border-radius: 10px; border: none;
-  background: linear-gradient(120deg, var(--accent), var(--accent2));
-  color: white; font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: transform .15s;
-}
-button:hover { transform: translateY(-1px); }
-button.ghost {
-  background: transparent; border: 1px solid #334155;
-}
-.actions {
-  display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px;
-}
-.toast {
-  margin-top: 14px; padding: 10px 14px; border-radius: 8px;
-  background: rgba(34,197,94,.15); color: var(--ok);
-}
-.toast.err { background: rgba(239,68,68,.15); color: var(--err); }
-.checkbox-row { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
-.checkbox-row input { width: 18px; height: 18px; }
-.row { display: flex; gap: 10px; }
-.row > * { flex: 1; }
-.kv {
-  background: var(--bg); padding: 12px; border-radius: 8px;
-  font-family: monospace; font-size: 13px; margin: 6px 0;
-}
-</style>
-</head><body>
-<div class=wrap>
-  <div class=logo>⚡ dorm-power-monitor 首次配置</div>
-  <div class=progress id=progress>
-    <div></div><div></div><div></div><div></div><div></div><div></div>
-  </div>
-  <div class=card id=card>
-    <h1 id=title>欢迎</h1>
-    <div id=body>加载中…</div>
-    <div id=toast></div>
-    <div class=actions id=actions></div>
-  </div>
-</div>
-<script>
-const step = {{ step }};
-const totalSteps = 6;
-function paintProgress() {
-  const ps = document.querySelectorAll('#progress div');
-  ps.forEach((d, i) => {
-    d.classList.remove('active', 'done');
-    if (i + 1 < step) d.classList.add('done');
-    else if (i + 1 === step) d.classList.add('active');
-  });
-}
-function toast(msg, isErr) {
-  const el = document.getElementById('toast');
-  el.innerHTML = '<div class="toast ' + (isErr ? 'err' : '') + '">' + msg + '</div>';
-  setTimeout(() => { el.innerHTML = ''; }, 4000);
-}
-async function save(data) {
-  const resp = await fetch('/admin/api/oobe/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ step: String(step), data }),
-  });
-  const json = await resp.json();
-  if (!json.ok) { toast(json.error || '保存失败', true); return null; }
-  return json;
-}
-function btn(label, fn, ghost) {
-  const b = document.createElement('button');
-  b.textContent = label;
-  if (ghost) b.classList.add('ghost');
-  b.addEventListener('click', fn);
-  return b;
-}
-
-const templates = {
-  1: () => ({
-    title: '欢迎使用 dorm-power-monitor',
-    body: '<p>跟着向导 6 步完成首次配置：</p>'
-      + '<ol><li>学校绑定</li><li>飞书 webhook 设置</li>'
-      + '<li>推送偏好</li><li>测试推送</li><li>完成</li></ol>'
-      + '<p>预计耗时 3 分钟。准备一个飞书机器人 webhook URL 和你的校园门户 openid URL。</p>',
-    // Round 37 B1 — was ``() => location.reload()`` which silently
-    // re-loaded step 1 forever (reload hits /admin/oobe which reads
-    // oobe_step='1' from meta and re-renders the same step).  Now
-    // calls goNext() with an empty payload so the server advances
-    // ``oobe_step`` to '2' and the wizard moves forward.
-    actions: [btn('下一步 →', () => goNext(), false)],
-  }),
-  2: () => ({
-    title: '第 2 步：绑定学校账号',
-    body: '<label>粘贴任意一个 finduser URL</label>'
-      + '<input id=school_url type=text placeholder="http://.../finduser?openid=...">'
-      + '<div id=parsed></div>',
-    actions: [
-      btn('解析', () => importUrl()),
-      btn('下一步 →', () => goNext()),
-    ],
-  }),
-  3: () => ({
-    title: '第 3 步：飞书 webhook',
-    body: '<label>飞书机器人 webhook URL</label>'
-      + '<input id=webhook_url type=text placeholder="https://open.feishu.cn/...">',
-    actions: [
-      btn('下一步 →', () => goNext()),
-    ],
-  }),
-  4: () => ({
-    title: '第 4 步：推送偏好',
-    body: '<div class=checkbox-row><input id=push_l2 type=checkbox checked>'
-      + '<label style=margin:0>整点报 (L2)</label></div>'
-      + '<div class=checkbox-row><input id=push_daily type=checkbox checked>'
-      + '<label style=margin:0>日报</label></div>'
-      + '<div class=checkbox-row><input id=push_weekly type=checkbox checked>'
-      + '<label style=margin:0>周报</label></div>'
-      + '<div class=checkbox-row><input id=push_monthly type=checkbox checked>'
-      + '<label style=margin:0>月报</label></div>'
-      + '<div class=row><div><label>静默开始</label>'
-      + '<input id=quiet_start type=time value="23:00"></div>'
-      + '<div><label>静默结束</label>'
-      + '<input id=quiet_end type=time value="07:00"></div></div>',
-    actions: [btn('下一步 →', () => goNext())],
-  }),
-  5: () => ({
-    title: '第 5 步：测试推送',
-    body: '<p>向步骤 3 设置的 webhook 发送一条测试消息。</p>'
-      + '<div id=test-result></div>',
-    actions: [
-      btn('发送测试消息', () => testPush()),
-      btn('下一步 →', () => goNext()),
-    ],
-  }),
-  6: () => ({
-    title: '配置完成！',
-    body: '<p>已保存全部偏好。dashboard 已解锁。</p>'
-      + '<p>建议接下来在 Admin 面板设置 HTTP Basic Auth 密码。</p>',
-    actions: [btn('进入 dashboard', () => location.href = '/admin')],
-  }),
-};
-
-async function importUrl() {
-  const url = document.getElementById('school_url').value.trim();
-  if (!url) { toast('URL 不能为空', true); return; }
-  const resp = await fetch('/admin/api/import-url', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-  });
-  const json = await resp.json();
-  if (!resp.ok || json.error) { toast(json.error || '解析失败', true); return; }
-  document.getElementById('parsed').innerHTML =
-    '<div class=kv>openid: ' + (json.openid || '(空)') + '</div>'
-    + '<div class=kv>roomId: ' + (json.roomId || '(空)') + '</div>'
-    + '<div class=kv>roomNo: ' + (json.roomNo || '(空)') + '</div>'
-    + '<div class=kv>EqPrice: ' + (json.EqPrice || '(空)') + '</div>';
-  toast('解析成功');
-}
-async function testPush() {
-  const r = document.getElementById('test-result');
-  r.innerHTML = '<div class=toast>发送中…</div>';
-  const resp = await fetch('/admin/api/test-push', { method: 'POST' });
-  const json = await resp.json();
-  if (json.ok) r.innerHTML = '<div class=toast>已发送 ✓</div>';
-  else r.innerHTML = '<div class="toast err">失败：' + (json.error || '') + '</div>';
-}
-async function goNext() {
-  let payload = {};
-  if (step === 2) {
-    const url = document.getElementById('school_url').value.trim();
-    if (!url) { toast('请粘贴学校 URL', true); return; }
-    payload = { school_url: url };
-  } else if (step === 3) {
-    payload = { webhook_url: document.getElementById('webhook_url').value.trim() };
-    if (!payload.webhook_url) { toast('请粘贴 webhook URL', true); return; }
-  } else if (step === 4) {
-    payload = {
-      l2_enable:     document.getElementById('push_l2').checked ? '1' : '0',
-      daily_enable:  document.getElementById('push_daily').checked ? '1' : '0',
-      weekly_enable: document.getElementById('push_weekly').checked ? '1' : '0',
-      monthly_enable:document.getElementById('push_monthly').checked ? '1' : '0',
-      quiet_hours_start: document.getElementById('quiet_start').value,
-      quiet_hours_end:   document.getElementById('quiet_end').value,
-    };
-  }
-  const r = await save(payload);
-  if (r) {
-    if (r.next_step === 'done') location.href = '/admin';
-    else location.href = '/admin/oobe?step=' + r.next_step;
-  }
-}
-
-paintProgress();
-const t = templates[step]();
-document.getElementById('title').textContent = t.title;
-document.getElementById('body').innerHTML = t.body;
-const acts = document.getElementById('actions');
-t.actions.forEach(a => acts.appendChild(a));
-</script>
-</body></html>"""
+# R62 — OOBE / admin templates also live in templates/ + static/.
+OOBE_HTML = _load_template("oobe.html")
 
 
-ADMIN_HTML = """<!doctype html>
-<html lang=zh><head>
-<meta charset=utf-8>
-<title>Admin — dorm-power-monitor</title>
-<style>
-/* Round 35 — glassmorphism admin page.
-   * CSS vars mirror the dashboard's design system so /admin and /
-     feel like one product.
-   * Inputs got high-contrast borders (rgba(96,165,250,.4)) and a
-     glow on focus so they're legible against the dark gradient.
-   * Push-config 4-column rows collapsed to a 2x2 grid on desktop and
-     a single column on ≤768px so each cell actually has room for
-     label + input. */
-:root {
-  --bg: #0f172a;
-  --bg2: #1e293b;
-  --fg: #f8fafc;
-  --muted: #94a3b8;
-  --accent: #60a5fa;
-  --accent-2: #34d399;
-  --ok: #22c55e;
-  --err: #ef4444;
-  --warn: #f59e0b;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(96,165,250,0.10) 0%, transparent 42%),
-    radial-gradient(circle at 88% 100%, rgba(52,211,153,0.08) 0%, transparent 42%),
-    var(--bg);
-  color: var(--fg);
-  padding: 40px 24px;
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
-}
-.wrap { max-width: 920px; margin: 0 auto; }
-h1 {
-  font-size: 26px;
-  margin: 0 0 28px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #60a5fa 0%, #34d399 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  letter-spacing: 0.5px;
-}
-section {
-  background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 16px;
-  padding: 24px;
-  margin: 0 0 24px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-section:hover {
-  border-color: rgba(96,165,250,0.25);
-  box-shadow: 0 6px 22px rgba(96,165,250,0.10);
-}
-section h2 {
-  margin: 0 0 16px;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-section h2 .ic { font-size: 19px; }
-label {
-  display: block;
-  margin: 14px 0 6px;
-  font-size: 13px;
-  color: var(--muted);
-  font-weight: 500;
-}
-.help {
-  display: block;
-  font-size: 0.8rem;
-  opacity: 0.6;
-  margin: 4px 0 0;
-  line-height: 1.4;
-}
-input {
-  width: 100%;
-  padding: 11px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(96,165,250,0.4);
-  background: rgba(15,23,42,0.55);
-  color: var(--fg);
-  font-size: 14px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-}
-input::placeholder { color: rgba(148,163,184,0.5); }
-input:hover {
-  border-color: rgba(96,165,250,0.6);
-  background: rgba(15,23,42,0.7);
-}
-input:focus {
-  border-color: rgba(96,165,250,0.8);
-  box-shadow: 0 0 0 3px rgba(96,165,250,0.18), 0 0 14px rgba(96,165,250,0.25);
-  background: rgba(15,23,42,0.85);
-}
-button {
-  padding: 10px 20px;
-  border-radius: 10px;
-  border: 1px solid rgba(96,165,250,0.4);
-  background: linear-gradient(135deg, rgba(96,165,250,0.18), rgba(52,211,153,0.18));
-  color: var(--fg);
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 14px;
-  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
-}
-button:hover {
-  border-color: rgba(96,165,250,0.8);
-  background: linear-gradient(135deg, rgba(96,165,250,0.30), rgba(52,211,153,0.30));
-}
-button:active { transform: translateY(1px); }
-/* 4-column push toggles become 2x2 grid on desktop, single column on mobile. */
-.row {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1.5rem;
-  margin-bottom: 4px;
-}
-.row > div { min-width: 0; }
-.row > div input { margin-top: 6px; }
-/* Buttons live in their own row below the grid. */
-.btn-row { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
-.toast { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
-.toast.ok  { background: rgba(34,197,94,.15); color: var(--ok); border: 1px solid rgba(34,197,94,.3); }
-.toast.err { background: rgba(239,68,68,.15); color: var(--err); border: 1px solid rgba(239,68,68,.3); }
-a.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 8px;
-  transition: background 0.15s ease;
-}
-a.back-link:hover {
-  background: rgba(96,165,250,0.10);
-  text-decoration: none;
-}
-/* Mobile: collapse 2x2 grid to a single column. */
-@media (max-width: 768px) {
-  body { padding: 24px 16px; }
-  .row { grid-template-columns: 1fr; gap: 12px; }
-  h1 { font-size: 22px; }
-  section { padding: 18px; }
-}
-</style>
-</head><body>
-<div class=wrap>
-  <h1>⚙ Admin — dorm-power-monitor</h1>
 
-  <section>
-    <h2><span class=ic>🏠</span>抓包配置</h2>
-    <label>学校 base URL</label>
-    <input id=dorm_base_url placeholder="http://ybhqcz.fjny.edu.cn">
-    <span class=help>宿舍门户根地址，默认即可（学校一般不会换）。</span>
+ADMIN_HTML = _load_template("admin.html")
+# Round 64 — login page template.
+LOGIN_HTML = _load_template("login.html")
 
-    <label>openid</label>
-    <input id=dorm_openid placeholder="oXyz...（微信 openid）">
-    <span class=help>把学校 H5 页面 URL 里的 <code>openid=</code> 整段粘进来；视为密码。</span>
 
-    <label>roomId</label>
-    <input id=dorm_room_id placeholder="UUID 或 32 位 hex">
-    <span class=help>留空让抓取脚本自动从 finduser 页面发现。已知可填加速抓取。</span>
+# =========================================================================
+# Round 65 — OOBE session state helpers + new wizard API.
+#
+# Background
+# ==========
+# The pre-R65 wizard used ``?step=N`` URL params + ``db.get_meta`` keys
+# (``oobe_step`` / ``oobe_completed``).  That broke the moment the user
+# refreshed — the URL reset to step=1 and the in-page form state was
+# gone.  R65 moves wizard state into the signed Flask session:
+#
+#   session['oobe'] = {
+#       'step':  <int 1..6>,
+#       'data':  {
+#           '1': {...},  # step 1 (welcome) — no fields
+#           '2': {app_id, app_secret, verification_token, encrypt_key},
+#           '3': {url, secret},
+#           '4': {cron_expr, timezone},
+#           '5': {records_days, monthly_backups, [skipped]},
+#           '6': {username, password_hash}   # password is NOT stored in
+#                                          # session plaintext; only the
+#                                          # final /complete endpoint reads
+#                                          # it from the request body.
+#       },
+#   }
+#
+#   session['oobe_complete'] = True   # set after step 6 succeeds
+#
+# Once ``oobe_complete`` is True, every ``/api/oobe/*`` route returns 403.
+# The wizard state is then cleared from the session (``session.pop('oobe')``)
+# so subsequent reloads stay short.
+#
+# URL params are ignored — the step is ALWAYS read from session, so
+# bookmarking /oobe?step=5 has no effect when session.step == 1.
+#
+# Backward compatibility
+# ----------------------
+# - ``/admin/oobe`` (legacy R34B entry) now redirects to ``/oobe`` so
+#   any older bookmark still works.
+# - ``/admin/api/oobe/save`` (legacy R63 backend) is kept UNCHANGED —
+#   R37 + R63 test suites still POST against it and expect specific
+#   step-by-step behavior.  We do not delete or alter that route.
+# - ``/`` redirect still consults ``db.get_meta('oobe_completed')`` AND
+#   ``session['oobe_complete']``; the legacy meta key stays the source
+#   of truth for the index-page redirect.
+# =========================================================================
 
-    <label>电价 (元/kW·h)</label>
-    <input id=eqprice placeholder="0.5">
-    <span class=help>用于低余额告警阈值；默认 0.5。</span>
+# Step 6 password strength: >= 8 chars, mixed case, digit, special char.
+_PASSWORD_SPECIAL_CHARS = r"!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?~`"
+_PASSWORD_SPECIAL_RE = re.compile(r"[" + _PASSWORD_SPECIAL_CHARS + r"]")
 
-    <label>飞书 webhook</label>
-    <input id=feishu_webhook_url placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
-    <span class=help>机器人 hook URL；签名验证另配 FEISHU_SECRET。</span>
 
-    <div class=btn-row>
-      <button onclick=saveScrape()>保存抓包配置</button>
-    </div>
-  </section>
+def _validate_password_strength(password):
+    """Return None on OK, else an error message.
 
-  <section>
-    <h2><span class=ic>🔔</span>推送配置</h2>
-    <div class=row>
-      <div><label>L2 整点报</label><input id=push_l2_enable placeholder="1 / 0"></div>
-      <div><label>日报</label><input id=push_daily_enable placeholder="1 / 0"></div>
-      <div><label>周报</label><input id=push_weekly_enable placeholder="1 / 0"></div>
-      <div><label>月报</label><input id=push_monthly_enable placeholder="1 / 0"></div>
-    </div>
-    <div class=row>
-      <div><label>日报时间</label><input id=push_daily_time placeholder="09:00"></div>
-      <div><label>周报时间</label><input id=push_weekly_time placeholder="周一 09:00"></div>
-      <div><label>月报时间</label><input id=push_monthly_time placeholder="1 号 09:00"></div>
-      <div></div>
-    </div>
-    <div class=row>
-      <div><label>静默开始</label><input id=quiet_hours_start placeholder="23:00"></div>
-      <div><label>静默结束</label><input id=quiet_hours_end placeholder="07:00"></div>
-    </div>
-    <div class=btn-row>
-      <button onclick=savePush()>保存推送配置</button>
-    </div>
-  </section>
+    The front-end (static/js/oobe.js#checkPasswordStrength) uses the same
+    rules so the meter stays consistent with the server's rejection
+    reasons.  This helper is deliberately local to web.py — auth.py is
+    owned by R63 and is not to be modified in R65.
+    """
+    if not isinstance(password, str) or not password:
+        return "password required"
+    if len(password) < 8:
+        return "password must be at least 8 characters"
+    if len(password) > 128:
+        return "password must be 128 characters or less"
+    if not re.search(r"[a-z]", password):
+        return "password must contain a lowercase letter"
+    if not re.search(r"[A-Z]", password):
+        return "password must contain an uppercase letter"
+    if not re.search(r"[0-9]", password):
+        return "password must contain a digit"
+    if not _PASSWORD_SPECIAL_RE.search(password):
+        return "password must contain a special character"
+    return None
 
-  <section>
-    <h2><span class=ic>🔐</span>Admin 密码</h2>
-    <label>新密码（留空不修改）</label>
-    <input id=admin_password type=password placeholder="至少 8 位">
-    <span class=help>改密码需要重启 dorm-web 服务。</span>
-    <div class=btn-row>
-      <button onclick=saveAdminPwd()>设置密码</button>
-    </div>
-  </section>
 
-  <section>
-    <h2><span class=ic>🧪</span>测试 & 操作</h2>
-    <span class=help style="margin:0 0 12px">先发一条测试消息确认 webhook 通，再用"立即抓取一次"验证整条数据通路。</span>
-    <div class=btn-row>
-      <button onclick=testPush()>发送测试消息</button>
-      <button onclick=forceRefresh()>立即抓取一次</button>
-    </div>
-    <div id=action-result></div>
-  </section>
+# Step 3 webhook URL whitelist: ``.tssplus.top`` + loopback only.
+# Mirrors the SSRF defenses on ``_parse_school_url`` — the wizard is the
+# only public-write surface for webhook URLs so the guard must be strict.
+_WEBHOOK_HOST_ALLOWLIST = (
+    "localhost",
+    "127.0.0.1",
+    "::1",
+)
 
-  <section>
-    <h2><span class=ic>↩</span>回到 dashboard</h2>
-    <a class=back-link href="/">← 返回主面板</a>
-  </section>
-</div>
 
-<script>
-function toast(msg, ok) {
-  const el = document.getElementById('action-result');
-  el.innerHTML = '<div class="toast ' + (ok ? 'ok' : 'err') + '">' + msg + '</div>';
-  setTimeout(() => { el.innerHTML = ''; }, 3500);
-}
-async function loadConfig() {
-  const [scrape, push] = await Promise.all([
-    fetch('/admin/api/scrape/config').then(r => r.json()),
-    fetch('/admin/api/push/config').then(r => r.json()),
-  ]);
-  for (const k of Object.keys(scrape)) {
-    const el = document.getElementById(k);
-    if (el) el.value = scrape[k];
-  }
-  for (const k of Object.keys(push)) {
-    const el = document.getElementById(k);
-    if (el) el.value = push[k];
-  }
-}
-async function saveScrape() {
-  const payload = {};
-  ['dorm_base_url','dorm_openid','dorm_room_id','eqprice','feishu_webhook_url']
-    .forEach(k => payload[k] = document.getElementById(k).value);
-  const r = await fetch('/admin/api/scrape/config', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(payload),
-  });
-  toast(r.ok ? '抓包配置已保存' : '保存失败', r.ok);
-}
-async function savePush() {
-  const payload = {};
-  ['push_l2_enable','push_daily_enable','push_weekly_enable','push_monthly_enable',
-   'push_daily_time','push_weekly_time','push_monthly_time',
-   'quiet_hours_start','quiet_hours_end'].forEach(k => {
-    const v = document.getElementById(k).value;
-    payload[k] = v;
-  });
-  const r = await fetch('/admin/api/push/config', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(payload),
-  });
-  toast(r.ok ? '推送配置已保存' : '保存失败', r.ok);
-}
-async function saveAdminPwd() {
-  const v = document.getElementById('admin_password').value;
-  if (!v) { toast('密码不能为空', false); return; }
-  const r = await fetch('/admin/api/admin-password', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ admin_password: v }),
-  });
-  toast(r.ok ? '密码已更新' : '保存失败', r.ok);
-}
-async function testPush() {
-  const r = await fetch('/admin/api/test-push', { method: 'POST' });
-  const j = await r.json();
-  toast(j.ok ? '已发送' : ('失败：' + (j.error || '')), j.ok);
-}
-async function forceRefresh() {
-  const r = await fetch('/api/refresh', { method: 'POST' });
-  const j = await r.json();
-  toast(j.ok ? '抓取成功' : ('失败：' + (j.error || '')), j.ok);
-}
-loadConfig();
-</script>
-</body></html>"""
+def _webhook_host_allowed(host):
+    """Return True when ``host`` (already lowercased) is on the allowlist."""
+    if not host:
+        return False
+    if host in _WEBHOOK_HOST_ALLOWLIST:
+        return True
+    if host.endswith(".tssplus.top"):
+        return True
+    return False
+
+
+def _validate_webhook_url(url):
+    """Return None on OK, else an error message.  SSRF guard."""
+    if not isinstance(url, str) or not url.strip():
+        return "webhook URL required"
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        return "webhook URL must start with http:// or https://"
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "webhook URL is not parseable"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return "webhook URL must have a host"
+    if not _webhook_host_allowed(host):
+        return "webhook host must be .tssplus.top or localhost"
+    return None
+
+
+def _validate_cron_expr(expr):
+    """Return None on OK, else an error message.  5-field crontab shape."""
+    if not isinstance(expr, str) or not expr.strip():
+        return "cron expression required"
+    parts = expr.strip().split()
+    if len(parts) != 5:
+        return "cron must have exactly 5 fields (minute hour day month dow)"
+    return None
+
+
+def _oobe_state():
+    """Return the in-progress wizard state stored in the Flask session.
+
+    The returned dict is a copy — callers must use :func:`_oobe_set_state`
+    to persist changes.  ``step`` defaults to 1; ``data`` defaults to
+    ``{}``.  The shape is the one documented at the top of this section.
+    """
+    raw = session.get("oobe")
+    if not isinstance(raw, dict):
+        return {"step": 1, "data": {}}
+    step = raw.get("step", 1)
+    try:
+        step = int(step)
+    except (TypeError, ValueError):
+        step = 1
+    step = max(1, min(6, step))
+    data = raw.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+    return {"step": step, "data": data}
+
+
+def _oobe_set_state(state):
+    """Persist a new wizard state dict to the Flask session."""
+    if not isinstance(state, dict):
+        state = {"step": 1, "data": {}}
+    session["oobe"] = state
+    session.permanent = True
+
+
+def _oobe_completed():
+    """Return True when the wizard is finished.
+
+    Sources of truth (any one is enough):
+      * ``session['oobe_complete']`` — set by ``/api/oobe/complete``.
+      * ``db.get_meta('oobe_completed') == '1'`` — pre-R65 / SQL-skip.
+      * ``auth.count_users() > 0`` — covers the case where the operator
+        ran ``ensure_initial_admin()`` directly without touching the
+        ``oobe_completed`` meta key.
+
+    All three are consulted because the session flag can be lost when
+    the cookie expires (default 24 h) but the DB row outlives that.
+    """
+    if session.get("oobe_complete"):
+        return True
+    try:
+        if db.get_meta("oobe_completed") == "1":
+            return True
+        if auth.count_users() > 0:
+            return True
+    except Exception:  # pragma: no cover — defensive
+        return False
+    return False
+
+
+def _oobe_validate_step(step, step_data):
+    """Server-side validation of the data bucket for ``step``.
+
+    Returns None on OK or an error message string.  Only steps with
+    fields are checked (steps 1 / 6 use different endpoints).
+    """
+    if step == 2:
+        if not (step_data or {}).get("app_id"):
+            return "app_id required"
+        if not (step_data or {}).get("app_secret"):
+            return "app_secret required"
+        return None
+    if step == 3:
+        return _validate_webhook_url((step_data or {}).get("url", ""))
+    if step == 4:
+        return _validate_cron_expr((step_data or {}).get("cron_expr", ""))
+    if step == 5:
+        if step_data.get("skipped"):
+            return None  # user explicitly chose defaults
+        days = step_data.get("records_days")
+        if not isinstance(days, int) or days < 5:
+            return "records retention days must be an integer >= 5"
+        return None
+    return None
+
+
+# ---- R65 new wizard GET + JSON API endpoints -------------------
+
+@app.route("/oobe")
+def oobe_wizard():
+    """R65 — render the OOBE wizard at the user's current session step.
+
+    Step state lives in ``session['oobe']`` (Flask signed cookie).  Once
+    the wizard is finished (session flag / db meta / users exist) we
+    redirect to ``/admin``.  URL params are ignored on purpose so a
+    user can't bookmark ``/oobe?step=5`` to skip ahead.
+    """
+    if _oobe_completed():
+        return redirect("/admin")
+    state = _oobe_state()
+    step = state["step"]
+    return render_template_string(OOBE_HTML, step=step)
 
 
 @app.route("/admin/oobe")
-def oobe_wizard():
-    """Round 34B — render the OOBE wizard at the user's current step.
+def oobe_wizard_legacy():
+    """R65 — back-compat alias; redirects to the new ``/oobe`` entry.
 
-    On every request we re-read the step counter from meta so a fresh
-    page load (e.g. after the user clicks "上一步") doesn't lose state.
-    Once ``oobe_completed=1`` is set we redirect to the main dashboard;
-    the wizard should not be reachable post-setup.
+    Pre-R65 bookmarks / dashboard redirects may still point here.  The
+    actual wizard state now lives in the Flask session, so we just
+    bounce to the canonical path.
     """
-    if db.get_meta("oobe_completed") == "1":
-        return redirect("/admin")
-    step_raw = db.get_meta("oobe_step") or "1"
-    try:
-        step = max(1, min(6, int(step_raw)))
-    except (TypeError, ValueError):
-        step = 1
-    return render_template_string(OOBE_HTML, step=step)
+    return redirect("/oobe")
 
+
+@app.route("/api/oobe/save-state", methods=["POST"])
+def oobe_save_state():
+    """R65 — persist one form's data to the session (no advance).
+
+    Body: ``{"step": <int>, "data": {<field>: <value>}}``
+
+    The data bucket is merged into ``session['oobe']['data'][step]``.
+    Returns ``{"ok": true}`` on success, 403 once ``oobe_complete`` is
+    set, 400 on bad input.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        step = int(payload.get("step", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "step must be an integer"}), 400
+    if not (1 <= step <= 6):
+        return jsonify({"ok": False, "error": "step out of range"}), 400
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "data must be an object"}), 400
+    state = _oobe_state()
+    bucket = state["data"].setdefault(str(step), {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        state["data"][str(step)] = bucket
+    bucket.update({k: v for k, v in data.items()})
+    _oobe_set_state(state)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/oobe/next", methods=["POST"])
+def oobe_next():
+    """R65 — validate current step, advance ``session['oobe']['step']``.
+
+    Body: ``{"step": <int>}``
+
+    Re-runs :func:`_oobe_validate_step` against the saved bucket so a
+    client that skipped client-side validation cannot bypass the gate.
+    On success the session step is bumped to ``step + 1`` (capped at 6).
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        step = int(payload.get("step", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "step must be an integer"}), 400
+    if not (1 <= step <= 6):
+        return jsonify({"ok": False, "error": "step out of range"}), 400
+    state = _oobe_state()
+    bucket = (state.get("data") or {}).get(str(step), {}) or {}
+    err = _oobe_validate_step(step, bucket)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    new_step = step + 1 if step < 6 else 6
+    state["step"] = new_step
+    _oobe_set_state(state)
+    return jsonify({"ok": True, "step": new_step})
+
+
+@app.route("/api/oobe/prev", methods=["POST"])
+def oobe_prev():
+    """R65 — go back one step in the session.
+
+    Body: ``{"step": <int>}`` — the client tells us where it is now;
+    we set ``session['o']['step'] = max(1, step - 1)``.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        step = int(payload.get("step", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "step must be an integer"}), 400
+    new_step = max(1, step - 1)
+    state = _oobe_state()
+    state["step"] = new_step
+    _oobe_set_state(state)
+    return jsonify({"ok": True, "step": new_step})
+
+
+@app.route("/api/oobe/skip-step", methods=["POST"])
+def oobe_skip_step():
+    """R65 — mark a step as skipped (uses defaults) and advance.
+
+    Currently only step 5 (data retention) is skippable — every other
+    step has required fields and must be validated explicitly.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    try:
+        step = int(payload.get("step", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "step must be an integer"}), 400
+    if step != 5:
+        return jsonify({"ok": False, "error": "step not skippable"}), 400
+    state = _oobe_state()
+    bucket = state["data"].setdefault("5", {})
+    bucket["skipped"] = True
+    bucket.setdefault("records_days", 90)
+    bucket.setdefault("monthly_backups", 12)
+    state["step"] = 6
+    _oobe_set_state(state)
+    return jsonify({"ok": True, "step": 6, "skipped": True})
+
+
+@app.route("/api/oobe/validate-feishu", methods=["POST"])
+def oobe_validate_feishu():
+    """R65 — test Feishu credentials by requesting tenant_access_token.
+
+    Body: ``{"app_id": "...", "app_secret": "...", "verification_token":
+    "...", "encrypt_key": "..."}``.  We POST only app_id/app_secret to
+    the official Feishu auth endpoint — verification_token / encrypt_key
+    are NOT sent (they're used for inbound event verification, not the
+    app-level auth).  Returns ``{"ok": true, "valid": true,
+    "bot_name": "..."}`` or 400 with an error.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    app_id = (payload.get("app_id") or "").strip()
+    app_secret = (payload.get("app_secret") or "").strip()
+    if not app_id or not app_secret:
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": "app_id and app_secret required",
+        }), 400
+    token_url = (
+        "https://open.feishu.cn/open-apis/auth/v3/"
+        "tenant_access_token/internal"
+    )
+    try:
+        resp = requests.post(
+            token_url,
+            json={"app_id": app_id, "app_secret": app_secret},
+            timeout=5,
+        )
+    except Exception as exc:  # noqa: BLE001 — any network error
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": f"network: {type(exc).__name__}: {exc}",
+        }), 400
+    if resp.status_code != 200:
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": f"HTTP {resp.status_code}",
+        }), 400
+    try:
+        body = resp.json()
+    except ValueError:
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": "non-JSON response from feishu",
+        }), 400
+    if body.get("code") != 0:
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": body.get("msg") or "invalid credentials",
+        }), 400
+    token = body.get("tenant_access_token") or ""
+    return jsonify({
+        "ok": True, "valid": True,
+        "bot_name": body.get("bot_name") or "ok",
+        # First 8 chars of the token so the UI can show "got a token,
+        # looks like cli_xxx..." without revealing the whole secret.
+        "tenant_access_token_prefix": token[:8] + ("..." if len(token) > 8 else ""),
+    })
+
+
+@app.route("/api/oobe/validate-webhook", methods=["POST"])
+def oobe_validate_webhook():
+    """R65 — POST a test payload to the user's webhook URL.
+
+    Body: ``{"url": "...", "secret": "..."}``.  When ``secret`` is
+    provided we sign the payload with the same Feishu HMAC-SHA256
+    scheme the inbound bot uses (``X-Lark-Signature`` header), so the
+    test exercises the full crypto path.  Returns ``{"ok": true,
+    "valid": true}`` or 400 with an error string.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    secret = (payload.get("secret") or "").strip()
+    err = _validate_webhook_url(url)
+    if err:
+        return jsonify({"ok": False, "valid": False, "error": err}), 400
+    ts = str(int(time.time()))
+    body_obj = {
+        "timestamp": ts,
+        "msg_type": "text",
+        "content": {"text": "dorm-power-monitor OOBE \u6d4b\u8bd5\u63a8\u9001"},
+    }
+    body_bytes = json.dumps(
+        body_obj, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if secret:
+        string_to_sign = "{}\n{}\n{}".format(ts, secret, body_bytes.decode("utf-8"))
+        digest = hmac.new(
+            string_to_sign.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).digest()
+        headers["X-Lark-Signature"] = base64.b64encode(digest).decode("utf-8")
+        headers["X-Lark-Request-Timestamp"] = ts
+    try:
+        resp = requests.post(url, data=body_bytes, headers=headers, timeout=5)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": f"network: {type(exc).__name__}: {exc}",
+        }), 400
+    if resp.status_code != 200:
+        # Truncate the body so a long HTML error page doesn't bloat the
+        # JSON toast the front-end renders.
+        snippet = (resp.text or "")[:200]
+        return jsonify({
+            "ok": False, "valid": False,
+            "error": f"HTTP {resp.status_code}: {snippet}",
+        }), 400
+    return jsonify({"ok": True, "valid": True})
+
+
+@app.route("/api/oobe/complete", methods=["POST"])
+def oobe_complete():
+    """R65 — finalize OOBE: validate + create admin + auto-login + flag.
+
+    Body: ``{"username": "...", "password": "...",
+    "password_confirm": "..."}``.
+
+    Behaviour:
+      * Validate username (alphanumerics + ``_.-``, 2-32 chars) and
+        password (length + complexity).
+      * If the ``users`` table is already non-empty (SQL skip / earlier
+        ``ensure_initial_admin`` seed) we mark ``oobe_complete`` but
+        skip user creation — the existing user must log in via
+        ``/login`` to receive a session.
+      * Otherwise call :func:`auth.create_user` with role='admin' and
+        auto-login via :func:`auth.create_session` + a session cookie.
+      * Both branches write ``session['oobe_complete'] = True`` AND
+        ``db.set_meta('oobe_completed', '1')`` so the ``GET /`` redirect
+        stops firing.
+
+    Audit: writes an ``oobe.complete`` row (or ``oobe.complete_failed``
+    on failure) with the IP + UA so the operator's audit dashboard
+    surfaces who finished setup.
+    """
+    if _oobe_completed():
+        return jsonify({"ok": False, "error": "oobe_completed"}), 403
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    password_confirm = payload.get("password_confirm") or ""
+    if not username:
+        return jsonify({"ok": False, "error": "username required"}), 400
+    if not re.match(r"^[A-Za-z0-9_.\-]{2,32}$", username):
+        return jsonify({
+            "ok": False,
+            "error": "username must be 2-32 chars [A-Za-z0-9_.-]",
+        }), 400
+    pw_err = _validate_password_strength(password)
+    if pw_err:
+        return jsonify({"ok": False, "error": pw_err}), 400
+    if password != password_confirm:
+        return jsonify({
+            "ok": False, "error": "password confirm mismatch",
+        }), 400
+
+    ip = auth.client_ip()
+    ua = request.headers.get("User-Agent", "") or ""
+
+    # Branch 1 — users table not empty (SQL skip / earlier seed).
+    # Don't try to create a duplicate user; just mark complete and
+    # tell the front-end to redirect to /login.
+    if auth.count_users() > 0:
+        session["oobe_complete"] = True
+        session.pop("oobe", None)
+        session.permanent = True
+        db.set_meta("oobe_completed", "1")
+        auth.write_audit(
+            "oobe.complete",
+            target=username,
+            ip=ip, user_agent=ua,
+            details={"skipped_create": True, "reason": "users table not empty"},
+        )
+        return jsonify({
+            "ok": True,
+            "redirect": "/login",
+            "skipped_create": True,
+        })
+
+    # Branch 2 — fresh install: create + auto-login.
+    try:
+        new_user = auth.create_user(
+            username=username, password=password, role=auth.ROLE_ADMIN,
+        )
+    except Exception as exc:  # noqa: BLE001 — likely IntegrityError
+        auth.write_audit(
+            "oobe.complete_failed",
+            target=username,
+            ip=ip, user_agent=ua,
+            details={"error": type(exc).__name__, "message": str(exc)[:120]},
+        )
+        return jsonify({
+            "ok": False,
+            "error": f"create user: {type(exc).__name__}",
+        }), 400
+
+    token = auth.create_session(new_user.id, ip=ip, user_agent=ua)
+    auth.mark_user_logged_in(new_user.id)
+    auth.write_audit(
+        "oobe.complete",
+        user_id=new_user.id,
+        target=username,
+        ip=ip, user_agent=ua,
+        details={"role": new_user.role, "skipped_create": False},
+    )
+    session[auth.SESSION_COOKIE_NAME] = token
+    session["oobe_complete"] = True
+    session.pop("oobe", None)
+    session.permanent = True
+    db.set_meta("oobe_completed", "1")
+    return jsonify({
+        "ok": True,
+        "redirect": "/admin",
+        "skipped_create": False,
+    })
+
+
+# ---- Legacy R34B / R37 / R63 OOBE backend (UNCHANGED) ----------
+# R37 + R63 test suites POST against ``/admin/api/oobe/save`` with
+# specific step payloads (step 2 missing roomId → 400, step 5 must
+# NOT call _post_feishu, etc.) so this route stays exactly as it was
+# before R65.  New wizard clients use the ``/api/oobe/*`` endpoints
+# above; the legacy endpoint is the back-compat path for any older
+# scripts / curl one-shots.
 
 @app.route("/admin/api/oobe/save", methods=["POST"])
 @_admin_required
@@ -3361,6 +2061,78 @@ def oobe_save():
         # clicks "发送测试消息" → POST /admin/api/test-push.
         pass
     elif step == 6:
+        # Round 63 — step 6 now ALSO seeds the admin user so the
+        # dashboard has a real auth subject to log in as.  The wizard's
+        # JS in this round still posts an empty payload for step 6
+        # (the login-UI rewrite is R64's job), so we tolerate both
+        # shapes:
+        #
+        #   * payload carries ``admin_username`` + ``admin_password`` +
+        #     ``admin_password_confirm`` → create the user, auto-login,
+        #     and return the session token so the front-end can plant
+        #     the cookie without an extra round-trip.
+        #
+        #   * payload is empty (current OOBE JS) → just mark OOBE
+        #     complete.  The ``auth.ensure_initial_admin()`` bootstrap
+        #     at module-import time already seeded an admin from
+        #     ``AUTH_INITIAL_ADMIN_PASSWORD`` when one was configured,
+        #     so this branch is correct for .env-driven deployments.
+        admin_username = (payload.get("admin_username") or "").strip()
+        admin_password = payload.get("admin_password") or ""
+        admin_password_confirm = (
+            payload.get("admin_password_confirm") or ""
+        )
+        if admin_username or admin_password or admin_password_confirm:
+            if not admin_username:
+                return jsonify({
+                    "ok": False,
+                    "error": "admin username required",
+                }), 400
+            if not admin_password:
+                return jsonify({
+                    "ok": False,
+                    "error": "admin password required",
+                }), 400
+            if admin_password != admin_password_confirm:
+                return jsonify({
+                    "ok": False,
+                    "error": "admin password confirm mismatch",
+                }), 400
+            try:
+                new_user = auth.create_user(
+                    username=admin_username,
+                    password=admin_password,
+                    role=auth.ROLE_ADMIN,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Likely IntegrityError (username UNIQUE) — surface a
+                # 400 so the JS can show "用户名已存在" or similar.
+                auth.write_audit(
+                    "oobe_admin_create_failed",
+                    target=admin_username,
+                    ip=auth.client_ip(),
+                    user_agent=request.headers.get("User-Agent", ""),
+                    details={"error": type(exc).__name__},
+                )
+                return jsonify({
+                    "ok": False,
+                    "error": f"create user: {type(exc).__name__}",
+                }), 400
+            # Auto-login the freshly created admin so the next page load
+            # lands inside /admin instead of the login screen.
+            ip = auth.client_ip()
+            ua = request.headers.get("User-Agent", "") or ""
+            token = auth.create_session(new_user.id, ip=ip, user_agent=ua)
+            auth.mark_user_logged_in(new_user.id)
+            auth.write_audit(
+                "oobe_admin_create",
+                user_id=new_user.id,
+                target=admin_username,
+                ip=ip, user_agent=ua,
+                details={"role": new_user.role},
+            )
+            session[auth.SESSION_COOKIE_NAME] = token
+            session.permanent = True
         db.set_meta("oobe_completed", "1")
 
     next_step = "done" if step >= 6 else str(step + 1)
@@ -3369,14 +2141,22 @@ def oobe_save():
 
 
 @app.route("/admin")
-@_admin_required
+@require_auth(role='admin')
 def admin_index():
-    """Round 34B — admin landing page (OOBE must be completed first)."""
-    return render_template_string(ADMIN_HTML)
+    """Round 64 — admin landing redirect.
+
+    Pre-R64 this rendered the single ``admin.html`` template that
+    combined scrape / push / password / test on one page.  R64 splits
+    that surface into 5 dedicated templates + 5 JSON APIs; we keep
+    ``/admin`` as the URL entry point and 302-redirect to the config
+    page so existing bookmarks still work.
+    """
+    return redirect("/admin/config")
 
 
 @app.route("/admin/api/scrape/config", methods=["GET", "POST"])
-@_admin_required
+@require_auth(role='admin')
+@require_csrf
 def admin_scrape_config():
     """GET / POST — read/write the school-scraping knobs."""
     if request.method == "GET":
@@ -3410,7 +2190,8 @@ def admin_scrape_config():
 
 
 @app.route("/admin/api/push/config", methods=["GET", "POST"])
-@_admin_required
+@require_auth(role='admin')
+@require_csrf
 def admin_push_config():
     """GET / POST — read/write the push-schedule knobs."""
     if request.method == "GET":
@@ -3441,7 +2222,8 @@ def admin_push_config():
 
 
 @app.route("/admin/api/test-push", methods=["POST"])
-@_admin_required
+@require_auth(role='admin')
+@require_csrf
 def admin_test_push():
     """Fire a one-off test message to the currently-configured webhook.
 
@@ -3483,7 +2265,8 @@ def admin_test_push():
 
 
 @app.route("/admin/api/admin-password", methods=["POST"])
-@_admin_required
+@require_auth(role='admin')
+@require_csrf
 def admin_set_password():
     """Round 34B — set the admin password (stored in meta as plain text).
 
@@ -3618,7 +2401,8 @@ small { color: #94a3b8; display: block; margin-top: 12px; }
 
 
 @app.route("/admin/api/import-url", methods=["POST"])
-@_admin_required
+@require_auth(role='admin')
+@require_csrf
 def admin_import_url():
     """Round 34B — parse a WeChat openid URL into school config values.
 
@@ -3644,6 +2428,673 @@ def admin_import_url():
         return jsonify({"error": "HTML 没找到 roomId（openid 可能过期或 flag=0 未绑定）"}), 400
 
     return jsonify(parsed)
+
+
+# ---------------------------------------------------------------------------
+# Round 64 — Login UI (HTML form).
+#
+# Background
+# ==========
+# Pre-R64 the dashboard's "admin" surface required HTTP Basic Auth
+# (legacy ``_admin_required`` decorator on /admin/api/oobe/save and
+# /admin/api/import-url).  R63 added session-cookie auth but kept the
+# same form-based flow for OOBE; the cookie-auth login screen lived
+# only as an AJAX endpoint (``POST /api/auth/login``).  R64 ships a
+# proper HTML login page so a user who is not logged in lands on it
+# instead of a JSON 401.
+#
+# Flow
+# ----
+#   * GET /login        → renders templates/login.html.  If the user
+#                         is ALREADY logged in (cookie valid) we
+#                         302 to /admin so they don't re-enter creds.
+#   * POST /login       → legacy form-encoded fallback (the actual
+#                         submit uses AJAX so the lockout toast can
+#                         appear inline).  On success we plant the
+#                         session cookie and redirect to /admin.
+# ---------------------------------------------------------------------------
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    """Round 64 — HTML login form + form-encoded POST fallback.
+
+    The JavaScript at ``static/js/login.js`` submits via AJAX so the
+    inline error toast can surface lockout / invalid-credential
+    messages.  This route handles the fallback path (no JS, curl,
+    weird browsers) by reading form-encoded ``username`` + ``password``
+    from the POST body.
+
+    On every GET we mint a fresh CSRF cookie (via the
+    ``csrf_token`` context processor) so the JS can echo it back.
+    """
+    if auth.get_current_user() is not None:
+        # Already logged in — skip the form and bounce to /admin.
+        return redirect("/admin")
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        ip = auth.client_ip()
+        ua = request.headers.get("User-Agent", "") or ""
+        result = auth.attempt_login(username, password, ip=ip, user_agent=ua)
+        if result.get("ok"):
+            session[auth.SESSION_COOKIE_NAME] = result["token"]
+            session.permanent = True
+            # Plant the CSRF cookie now so the destination /admin
+            # doesn't have to ask for it on the landing GET.
+            auth.csrf_cookie_token()
+            return redirect("/admin")
+        err = result.get("error", "invalid_credentials")
+        # R64 — surface the lockout / invalid_credentials reason via
+        # a tiny inline error so curl users see something useful.
+        return Response(
+            _login_error_html(err),
+            status=401,
+            mimetype="text/html",
+        )
+    return render_template_string(LOGIN_HTML)
+
+
+def _login_error_html(err: str) -> str:
+    """Tiny HTML page for curl-style POST /login failures (no AJAX)."""
+    if err == "locked":
+        msg = "账号已锁定，请 15 分钟后再试。"
+    else:
+        msg = "用户名或密码错误。"
+    safe = msg.replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        "<title>登录失败</title>"
+        "<p>" + safe + "</p>"
+        "<p><a href='/login'>← 返回登录</a></p>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Round 64 — 5 admin page templates + 5 admin JSON APIs.
+#
+# Each admin page route renders one of the new R64 templates and
+# each admin API endpoint exposes the CRUD surface it consumes.
+#
+# Decorator stacking: every admin route carries
+#   ``@require_auth(role='admin') @require_csrf``
+# so the route is both authenticated AND CSRF-protected (for non-GET
+# methods).  GET admin pages don't need CSRF; the new API surface
+# does because every mutating route (POST / PUT / DELETE) changes
+# server state.
+# ---------------------------------------------------------------------------
+ADMIN_USERS_HTML = _load_template("admin_users.html")
+ADMIN_CONFIG_HTML = _load_template("admin_config.html")
+ADMIN_TEST_HTML = _load_template("admin_test.html")
+ADMIN_AUDIT_HTML = _load_template("admin_audit.html")
+
+
+# ---------------------------------------------------------------------------
+# /admin/users — user CRUD page
+# ---------------------------------------------------------------------------
+@app.route("/admin/users")
+@require_auth(role='admin')
+def admin_users_page():
+    """Render the user-management page."""
+    csrf = auth.csrf_cookie_token()
+    return render_template_string(
+        ADMIN_USERS_HTML,
+        csrf_token_value=csrf,
+        current_user=auth.get_current_user(),
+    )
+
+
+@app.route("/api/admin/users", methods=["GET"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_users_list():
+    """Round 64 — list every user with id / username / role / timestamps."""
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, username, role, created_at, last_login_at "
+            "FROM users ORDER BY id ASC"
+        ).fetchall()
+    return jsonify({
+        "users": [
+            {
+                "id": r["id"],
+                "username": r["username"],
+                "role": r["role"],
+                "created_at": r["created_at"] or "",
+                "last_login_at": r["last_login_at"],
+            }
+            for r in rows
+        ],
+    })
+
+
+@app.route("/api/admin/users", methods=["POST"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_users_create():
+    """Round 64 — create a new user (admin or viewer)."""
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = (data.get("role") or "").strip()
+    # Validation — fail fast with explicit error keys.
+    if not (3 <= len(username) <= 32):
+        return jsonify({
+            "ok": False,
+            "error": "validation_failed",
+            "field": "username",
+        }), 400
+    if len(password) < 8:
+        return jsonify({
+            "ok": False,
+            "error": "validation_failed",
+            "field": "password",
+        }), 400
+    if role not in auth.VALID_ROLES:
+        return jsonify({
+            "ok": False,
+            "error": "validation_failed",
+            "field": "role",
+        }), 400
+    try:
+        user = auth.create_user(
+            username=username, password=password, role=role,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Most likely IntegrityError (UNIQUE on username) — surface as
+        # ``username_exists`` so the JS can show a friendly toast.
+        auth.write_audit(
+            "user.create.failed",
+            target=username,
+            ip=auth.client_ip(),
+            user_agent=request.headers.get("User-Agent", ""),
+            details={"error": type(exc).__name__},
+        )
+        return jsonify({
+            "ok": False,
+            "error": "username_exists",
+        }), 400
+    auth.write_audit(
+        "user.create",
+        user_id=user.id,
+        target=username,
+        ip=auth.client_ip(),
+        user_agent=request.headers.get("User-Agent", ""),
+        details={"role": role},
+    )
+    return jsonify({
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "created_at": user.created_at,
+            "last_login_at": user.last_login_at,
+        },
+    }), 201
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_users_update(user_id: int):
+    """Round 64 — update an existing user's role / password."""
+    target = auth.get_user_by_id(user_id)
+    if target is None:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+    data = request.get_json(silent=True) or {}
+    new_role = data.get("role")
+    new_password = data.get("password")
+    if new_role is None and not new_password:
+        return jsonify({
+            "ok": False,
+            "error": "nothing_to_update",
+        }), 400
+    if new_role is not None:
+        if new_role not in auth.VALID_ROLES:
+            return jsonify({
+                "ok": False,
+                "error": "validation_failed",
+                "field": "role",
+            }), 400
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (new_role, user_id),
+            )
+    if new_password:
+        if len(new_password) < 8:
+            return jsonify({
+                "ok": False,
+                "error": "validation_failed",
+                "field": "password",
+            }), 400
+        new_hash = auth.hash_password(new_password)
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (new_hash, user_id),
+            )
+    refreshed = auth.get_user_by_id(user_id)
+    auth.write_audit(
+        "user.update",
+        user_id=refreshed.id if refreshed else user_id,
+        target=target.username,
+        ip=auth.client_ip(),
+        user_agent=request.headers.get("User-Agent", ""),
+        details={
+            "role_changed": new_role is not None,
+            "password_changed": bool(new_password),
+        },
+    )
+    return jsonify({
+        "ok": True,
+        "user": {
+            "id": refreshed.id,
+            "username": refreshed.username,
+            "role": refreshed.role,
+            "created_at": refreshed.created_at,
+            "last_login_at": refreshed.last_login_at,
+        },
+    })
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_users_delete(user_id: int):
+    """Round 64 — delete a user + revoke every session row for them.
+
+    Guards:
+      * cannot delete the currently-logged-in user (would 401 the
+        operator mid-request).
+      * cannot delete the LAST remaining admin — the system would
+        be unreachable for further user management.
+    """
+    current = auth.get_current_user()
+    if current is None or current.id != _current_user_id_from_request():
+        # Defensive — the @require_auth should already have ensured
+        # current is set.  We re-read from g.current_user for the
+        # comparison.
+        pass
+    target = auth.get_user_by_id(user_id)
+    if target is None:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+    # Rule 1 — no self-delete.
+    if target.id == current.id:
+        return jsonify({
+            "ok": False,
+            "error": "cannot_delete_self",
+        }), 400
+    # Rule 2 — no deleting the last admin.
+    if target.role == auth.ROLE_ADMIN:
+        admin_count = 0
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role = ?",
+                (auth.ROLE_ADMIN,),
+            ).fetchone()
+            admin_count = int(row["n"] or 0) if row else 0
+        if admin_count <= 1:
+            return jsonify({
+                "ok": False,
+                "error": "cannot_delete_last_admin",
+            }), 400
+    # Revoke every session row owned by this user, then delete the row.
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    auth.write_audit(
+        "user.delete",
+        user_id=current.id,
+        target=target.username,
+        ip=auth.client_ip(),
+        user_agent=request.headers.get("User-Agent", ""),
+        details={"role": target.role},
+    )
+    return jsonify({"ok": True})
+
+
+def _current_user_id_from_request() -> int:
+    """Best-effort ``current_user.id`` lookup without importing g."""
+    user = auth.get_current_user()
+    return user.id if user else -1
+
+
+# ---------------------------------------------------------------------------
+# /admin/config — scrape / push / admin password page
+# ---------------------------------------------------------------------------
+@app.route("/admin/config")
+@require_auth(role='admin')
+def admin_config_page():
+    """Render the unified system-config page."""
+    csrf = auth.csrf_cookie_token()
+    # Pre-load scrape + push config so the JS can hydrate without an
+    # extra round-trip (the ``__INITIAL_DATA__`` pattern from R66).
+    scrape = {
+        "dorm_base_url": db.get_meta("dorm_base_url") or config.DORM_BASE_URL,
+        "dorm_openid": db.get_meta("dorm_openid") or config.DORM_OPENID,
+        "dorm_room_id": db.get_meta("last_room_id") or "",
+        "eqprice": db.get_meta("eqprice") or "0.5",
+        "feishu_webhook_url": (
+            db.get_meta("feishu_webhook_url") or config.FEISHU_WEBHOOK
+        ),
+    }
+    push_keys = (
+        "push_l2_enable", "push_daily_enable", "push_weekly_enable",
+        "push_monthly_enable",
+        "push_daily_time", "push_weekly_time", "push_monthly_time",
+        "quiet_hours_start", "quiet_hours_end",
+    )
+    push_defaults = {
+        "push_l2_enable": "1",
+        "push_daily_enable": "1",
+        "push_weekly_enable": "1",
+        "push_monthly_enable": "1",
+        "push_daily_time": "09:00",
+        "push_weekly_time": "09:00",
+        "push_monthly_time": "09:00",
+        "quiet_hours_start": "23:00",
+        "quiet_hours_end": "07:00",
+    }
+    push = {k: db.get_meta(k) or push_defaults[k] for k in push_keys}
+    initial = {
+        "scrape": scrape,
+        "push": push,
+    }
+    return render_template_string(
+        ADMIN_CONFIG_HTML,
+        csrf_token_value=csrf,
+        current_user=auth.get_current_user(),
+        initial_data=initial,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /admin/test — manual scrape + push page
+# ---------------------------------------------------------------------------
+@app.route("/admin/test")
+@require_auth(role='admin')
+def admin_test_page():
+    """Render the manual-trigger page (test scrape + test push)."""
+    csrf = auth.csrf_cookie_token()
+    return render_template_string(
+        ADMIN_TEST_HTML,
+        csrf_token_value=csrf,
+        current_user=auth.get_current_user(),
+    )
+
+
+@app.route("/api/admin/test-scrape", methods=["POST"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_test_scrape():
+    """Round 64 — trigger an immediate school scrape (force_refresh).
+
+    Thin wrapper over ``dorm_power.fetch_once`` so the admin can run a
+    scrape WITHOUT having to walk back to the dashboard and click the
+    refresh button.  Same network work + DB persist, same Feishu
+    suppression (``fetch_only=True`` semantics inside ``fetch_once``).
+    """
+    # Re-use the same internal-token guard as /api/refresh so an Nginx
+    # bypass doesn't accidentally expose this surface.
+    _check_internal_token()
+    try:
+        from dorm_power import fetch_once
+    except ImportError as exc:  # pragma: no cover
+        return jsonify({"ok": False, "error": f"import: {exc}"}), 500
+    try:
+        result = fetch_once()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("admin test-scrape failed: %r", exc)
+        return jsonify({
+            "ok": False,
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }), 500
+    body = result.get("body") or {}
+    scrape_status = result.get("scrape_status") or "unknown"
+    auth.write_audit(
+        "admin.test_scrape",
+        user_id=(auth.get_current_user().id if auth.get_current_user() else None),
+        target="/api/admin/test-scrape",
+        ip=auth.client_ip(),
+        user_agent=request.headers.get("User-Agent", ""),
+        details={"scrape_status": scrape_status},
+    )
+    return jsonify({
+        "ok": scrape_status == "ok",
+        "scrape_status": scrape_status,
+        "ts": result.get("dt") or body.get("dt") or "",
+        "remain": _round2(body.get("remainEq")),
+    })
+
+
+@app.route("/api/admin/test-push", methods=["POST"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_test_push():
+    """Round 64 — fire a one-off webhook test message.
+
+    Same implementation as the legacy ``/admin/api/test-push`` so the
+    new R64 admin test page renders the same outcome.  We keep the
+    legacy route intact for back-compat (it remains the path used by
+    the OOBE wizard step 5).
+    """
+    try:
+        from dorm_power import _post_feishu
+    except ImportError as exc:  # pragma: no cover
+        return jsonify({"ok": False, "error": f"import: {exc}"}), 500
+    webhook = (
+        db.get_meta("feishu_webhook_url") or config.FEISHU_WEBHOOK or ""
+    )
+    if not webhook:
+        return jsonify({
+            "ok": True,
+            "notice": "no webhook configured",
+        })
+    _orig = config.FEISHU_WEBHOOK
+    config.FEISHU_WEBHOOK = webhook
+    try:
+        _post_feishu(
+            {
+                "msg_type": "text",
+                "content": {"text": "dorm-power-monitor 测试推送"},
+            },
+            raise_on_error=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        config.FEISHU_WEBHOOK = _orig
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    config.FEISHU_WEBHOOK = _orig
+    auth.write_audit(
+        "admin.test_push",
+        user_id=(auth.get_current_user().id if auth.get_current_user() else None),
+        target="/api/admin/test-push",
+        ip=auth.client_ip(),
+        user_agent=request.headers.get("User-Agent", ""),
+        details={"ok": True},
+    )
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# /admin/audit — audit_log viewer page
+# ---------------------------------------------------------------------------
+@app.route("/admin/audit")
+@require_auth(role='admin')
+def admin_audit_page():
+    """Render the audit_log viewer."""
+    csrf = auth.csrf_cookie_token()
+    return render_template_string(
+        ADMIN_AUDIT_HTML,
+        csrf_token_value=csrf,
+        current_user=auth.get_current_user(),
+    )
+
+
+@app.route("/api/admin/audit", methods=["GET"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_audit_list():
+    """Round 64 — paginated + filterable audit_log view.
+
+    Query params (all optional):
+      * ``page``        1-indexed page number (default 1).
+      * ``per_page``    rows per page (default 50, capped at 200).
+      * ``action``      exact-match filter (e.g. ``user.create``).
+      * ``user_id``     restrict to actions performed by one user.
+      * ``since``       ``YYYY-MM-DD HH:MM:SS`` floor on created_at.
+
+    Returns ``{"rows": [...], "total": N, "page": p, "per_page": pp}``
+    so the front-end can paint a "page 3 of 12" footer.
+    """
+    try:
+        page = max(1, int(request.args.get("page", "1") or "1"))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = max(1, min(200, int(
+            request.args.get("per_page", "50") or "50"
+        )))
+    except (TypeError, ValueError):
+        per_page = 50
+    action_filter = (request.args.get("action") or "").strip()
+    user_filter = (request.args.get("user_id") or "").strip()
+    since_filter = (request.args.get("since") or "").strip()
+
+    clauses = []
+    params: list = []
+    if action_filter:
+        clauses.append("action = ?")
+        params.append(action_filter)
+    if user_filter:
+        try:
+            clauses.append("user_id = ?")
+            params.append(int(user_filter))
+        except (TypeError, ValueError):
+            pass
+    if since_filter:
+        clauses.append("created_at >= ?")
+        params.append(since_filter)
+    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    with db.get_conn() as conn:
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM audit_log {where_sql}",
+            params,
+        ).fetchone()
+        total = int(total_row["n"] or 0) if total_row else 0
+        rows = conn.execute(
+            f"SELECT id, user_id, action, target, ip, user_agent, "
+            f"       created_at, details "
+            f"FROM audit_log {where_sql} "
+            f"ORDER BY id DESC "
+            f"LIMIT ? OFFSET ?",
+            params + [per_page, (page - 1) * per_page],
+        ).fetchall()
+    return jsonify({
+        "rows": [
+            {
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "action": r["action"],
+                "target": r["target"],
+                "ip": r["ip"],
+                "user_agent": r["user_agent"],
+                "created_at": r["created_at"] or "",
+                "details": r["details"],
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Round 64 — system-config JSON API.
+#
+# Unified GET / PUT over the ``meta`` table; the admin config page
+# uses it to read scrape / push / password in one round-trip and to
+# write changes with audit.  All mutating routes carry @require_csrf.
+# ---------------------------------------------------------------------------
+@app.route("/api/admin/config", methods=["GET"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_config_get():
+    """Return the unified config snapshot the admin pages consume."""
+    scrape = {
+        "dorm_base_url": db.get_meta("dorm_base_url") or config.DORM_BASE_URL,
+        "dorm_openid": db.get_meta("dorm_openid") or config.DORM_OPENID,
+        "dorm_room_id": db.get_meta("last_room_id") or "",
+        "eqprice": db.get_meta("eqprice") or "0.5",
+        "feishu_webhook_url": (
+            db.get_meta("feishu_webhook_url") or config.FEISHU_WEBHOOK
+        ),
+    }
+    push_defaults = {
+        "push_l2_enable": "1",
+        "push_daily_enable": "1",
+        "push_weekly_enable": "1",
+        "push_monthly_enable": "1",
+        "push_daily_time": "09:00",
+        "push_weekly_time": "09:00",
+        "push_monthly_time": "09:00",
+        "quiet_hours_start": "23:00",
+        "quiet_hours_end": "07:00",
+    }
+    push = {
+        k: db.get_meta(k) or v
+        for k, v in push_defaults.items()
+    }
+    return jsonify({
+        "ok": True,
+        "scrape": scrape,
+        "push": push,
+        "admin_password_set": bool(
+            db.get_meta("admin_password")
+            or os.environ.get("ADMIN_PASSWORD", "")
+        ),
+    })
+
+
+@app.route("/api/admin/config", methods=["PUT"])
+@require_auth(role='admin')
+@require_csrf
+def api_admin_config_put():
+    """Update one or more config keys; audit each write.
+
+    Body shape::
+
+        { "scrape": { "dorm_base_url": "...", ... },
+          "push":   { "push_l2_enable": "1", ... },
+          "admin_password": "new-password"    # optional
+        }
+    """
+    data = request.get_json(silent=True) or {}
+    changes: list[dict] = []
+    scrape = data.get("scrape") or {}
+    for k, v in scrape.items():
+        meta_key = "last_room_id" if k == "dorm_room_id" else k
+        db.set_meta(meta_key, str(v))
+        changes.append({"key": meta_key, "section": "scrape"})
+    push = data.get("push") or {}
+    for k, v in push.items():
+        db.set_meta(k, str(v))
+        changes.append({"key": k, "section": "push"})
+    new_pwd = data.get("admin_password")
+    if new_pwd:
+        db.set_meta("admin_password", str(new_pwd))
+        changes.append({"key": "admin_password", "section": "auth"})
+    if changes:
+        auth.write_audit(
+            "config.update",
+            user_id=(auth.get_current_user().id if auth.get_current_user() else None),
+            target="/api/admin/config",
+            ip=auth.client_ip(),
+            user_agent=request.headers.get("User-Agent", ""),
+            details={"keys": changes},
+        )
+    return jsonify({"ok": True, "changed": len(changes)})
 
 
 def main() -> None:
