@@ -12,6 +12,13 @@ _tmp_*.py
 _tmp_*.txt
 _tmp_*.zip
 
+# 本地临时文件（调试输出 / 提交信息草稿 / 探针文件）
+# 约定：以下划线开头、不放进任何包 —— 曾误把 _msg.txt 提交进仓库
+_*.txt
+_*.py
+_*.json
+
+
 # OS
 .DS_Store
 Thumbs.db
