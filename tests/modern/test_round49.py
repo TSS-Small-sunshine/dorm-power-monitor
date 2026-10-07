@@ -70,7 +70,11 @@ import unittest
 from pathlib import Path
 
 PROJ_DIR = Path("D:/MiniMax_Workstation/Creative_Workstation/dorm-power-monitor")
-DB_PY = PROJ_DIR / "db.py"
+# Round 61 - db.py was split into the ``db/`` package; the actual
+# implementation moved to ``db/_legacy.py``.  Point DB_PY at the new
+# path so the static schema / SQL-fragment guards still find the
+# source they were originally written against.
+DB_PY = PROJ_DIR / "db" / "_legacy.py"
 MIGRATION_PY = PROJ_DIR / "scripts" / "deploy" / "r49_dedupe_records.py"
 
 
@@ -182,6 +186,11 @@ class TestInsertOrReplaceOverwritesDuplicate(unittest.TestCase):
 
             # Patch the ``datetime`` reference inside the db module
             # so the second call returns the same ts as the first.
+            # Round 61 - ``db.insert`` is re-exported from
+            # ``db._legacy``; ``datetime`` is bound by the legacy
+            # module's ``from datetime import datetime`` line, so we
+            # patch via ``db._legacy.datetime`` to actually replace
+            # the reference the legacy ``insert()`` resolves.
             import datetime as _dt_mod
 
             class _FakeDatetime:
@@ -192,14 +201,14 @@ class TestInsertOrReplaceOverwritesDuplicate(unittest.TestCase):
                 def strftime(self, _fmt: str) -> str:
                     return fixed_ts
 
-            original_datetime = db.datetime
-            db.datetime = _FakeDatetime  # type: ignore[assignment]
+            original_datetime = db._legacy.datetime
+            db._legacy.datetime = _FakeDatetime  # type: ignore[assignment]
 
             try:
                 db.insert(100.0, "2026-09-17 10:00:00")
                 db.insert(110.0, "2026-09-17 10:00:05")
             finally:
-                db.datetime = original_datetime  # type: ignore[assignment]
+                db._legacy.datetime = original_datetime  # type: ignore[assignment]
 
             # Read back — must be exactly one row with remain=110.
             conn = sqlite3.connect(tmp_path)

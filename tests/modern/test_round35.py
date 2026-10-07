@@ -349,14 +349,16 @@ class TestRound35SyntaxAndExports(unittest.TestCase):
 
     def test_db_exports_migrate_helper(self):
         # The migration may live as a module-level function or a
-        # nested helper inside init() — accept either.  The simplest
+        # nested helper inside init() - accept either.  The simplest
         # signal that the migration logic shipped is that ``db.init``
-        # exists and that the AST of db.py mentions both meta keys.
-        text = pathlib.Path(db.__file__).read_text(encoding="utf-8")
+        # exists and that the AST of db._legacy (the frozen
+        # implementation file moved out of db.py in Round 61) mentions
+        # both meta keys.
+        text = pathlib.Path(db._legacy.__file__).read_text(encoding="utf-8")
         self.assertIn("last_room_id", text,
-                      "db.py must reference last_room_id")
+                      "db._legacy must reference last_room_id")
         self.assertIn("dorm_room_id", text,
-                      "db.py must reference dorm_room_id (legacy)")
+                      "db._legacy must reference dorm_room_id (legacy)")
         # And the migration body must be wired into init().
         tree = ast.parse(text)
         init_fn = next(
