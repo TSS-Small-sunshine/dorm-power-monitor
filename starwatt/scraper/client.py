@@ -162,6 +162,8 @@ class SchoolClient:
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{self.base_url}{FINDUSER_PATH}",
+            # 学校接口还校验 Origin（legacy ``_fetch_data`` 也发了它）
+            "Origin": self.base_url,
         }
         if self.user_agent:
             headers["User-Agent"] = self.user_agent

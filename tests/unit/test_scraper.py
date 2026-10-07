@@ -10,6 +10,7 @@ import pytest
 import requests
 
 from starwatt.scraper import client as cl
+from starwatt.scraper import endpoints as ep
 from starwatt.scraper import ssrf
 
 
@@ -370,3 +371,278 @@ class TestSsrfNotRetried:
         with pytest.raises(ssrf.SsrfError):
             client.get("http://localhost/a")
         assert session.calls == []
+
+
+# ===========================================================================
+# endpoints —— 响应整形 / 房间发现 / 字段映射
+# ===========================================================================
+class TestAsList:
+    """学校对空结果会返回裸对象 —— 容器名是实测出来的，不能改。"""
+
+    @pytest.mark.parametrize("key", ["rows", "data", "list", "records"])
+    def test_unwraps_known_containers(self, key) -> None:
+        assert ep.as_list({key: [{"a": 1}]}) == [{"a": 1}]
+
+    def test_bare_list(self) -> None:
+        assert ep.as_list([{"a": 1}]) == [{"a": 1}]
+
+    def test_filters_non_dicts(self) -> None:
+        assert ep.as_list([{"a": 1}, "junk", 3, None]) == [{"a": 1}]
+
+    def test_unknown_shape_yields_zero_rows(self) -> None:
+        """错误字符串 / 未知结构一律当 0 行，不抛异常。"""
+        assert ep.as_list({"unexpected": 1}) == []
+        assert ep.as_list("error") == []
+        assert ep.as_list(None) == []
+
+
+class TestCheckStatus:
+    def test_accepts_zero(self) -> None:
+        ep.check_status({"status": "0"}, "/x")
+        ep.check_status({"status": 0}, "/x")
+        ep.check_status({}, "/x")  # 没有 status 字段 = 不校验
+
+    def test_rejects_failure_code(self) -> None:
+        with pytest.raises(cl.ScrapeError, match="失败码"):
+            ep.check_status({"status": "-1", "message": "登录失效"}, "/x")
+
+    def test_includes_message(self) -> None:
+        with pytest.raises(cl.ScrapeError, match="登录失效"):
+            ep.check_status({"status": "-1", "message": "登录失效"}, "/x")
+
+
+class TestDateRange:
+    def test_default_window(self) -> None:
+        from datetime import datetime
+
+        stime, etime = ep.date_range(30, today=datetime(2026, 10, 6))
+        assert (stime, etime) == ("2026-09-06", "2026-10-06")
+
+    def test_pay_range_is_anchored_to_semester(self) -> None:
+        """📌 不是 30 天滚动窗口 —— 否则 9/7 的充值永远查不到。"""
+        from datetime import datetime
+
+        stime, etime = ep.pay_date_range(today=datetime(2026, 10, 6))
+        assert stime == ep.PAY_SEMESTER_START == "2026-09-07"
+        assert etime == "2026-10-06"
+
+
+class TestDiscoverRoom:
+    def test_parses_hidden_room_id_and_label(self) -> None:
+        html = (
+            '<input type="hidden" id="roomId" value="abc-123">'
+            '<input type="text" id="roomNo" value="6号楼-1-119">'
+        )
+        info = ep.discover_room(html)
+        assert info.room_id == "abc-123"
+        assert info.room_label == "6号楼-1-119"
+        assert info.found is True
+
+    def test_handles_reversed_attribute_order(self) -> None:
+        """📌 Round 34A：学校 HTML 的属性顺序不保证，两种都要认。"""
+        html = (
+            '<input value="B-1-119" id="roomNo">'
+            '<input type="hidden" id="roomId" value="xyz">'
+        )
+        info = ep.discover_room(html)
+        assert info.room_id == "xyz"
+        assert info.room_label == "B-1-119"
+
+    def test_ignores_non_hidden_roomid(self) -> None:
+        html = '<input type="text" id="roomId" value="should-not-use">'
+        assert ep.discover_room(html).room_id is None
+
+    def test_missing_label_is_none(self) -> None:
+        info = ep.discover_room('<input type="hidden" id="roomId" value="abc">')
+        assert info.room_id == "abc" and info.room_label is None
+
+    def test_empty_or_garbage_html(self) -> None:
+        assert ep.discover_room("").found is False
+        assert ep.discover_room("<html>login</html>").found is False
+
+
+class TestF1Parse:
+    def test_reads_remain_eq_and_dt(self, tmp_db, frozen_now) -> None:
+        row = ep.F1Live.parse({"remainEq": 10.5, "dt": "2026-10-06 11:00:00"})
+        assert row["remain"] == 10.5
+        assert row["read_time"] == "2026-10-06 11:00:00"
+        assert row["ts"] == "2026-10-06 12:00:00"
+
+    def test_missing_remain_is_none_not_zero(self) -> None:
+        """「不知道」与「没电了」是两回事 —— 卡片配色依赖这个区别。"""
+        assert ep.F1Live.parse({})["remain"] is None
+
+    def test_accepts_camel_case_fallback(self) -> None:
+        assert ep.F1Live.parse({"remain": 3.0})["remain"] == 3.0
+
+    def test_garbage_remain_is_none(self) -> None:
+        assert ep.F1Live.parse({"remainEq": "n/a"})["remain"] is None
+
+
+class TestF2Parse:
+    def test_maps_fields(self) -> None:
+        rows = ep.F2Daily.parse(
+            [{"dt": "2026-10-06", "esbm": 1.0, "eebm": 30.83, "total_eq": 9.9}],
+            "room-1",
+        )
+        assert rows == [{
+            "roomId": "room-1", "dt": "2026-10-06", "esbm": 1.0,
+            "eebm": 30.83, "total_eq": 9.9, "zong_eq": 30.83,
+        }]
+
+    def test_zong_prefers_eebm_over_useEq(self) -> None:
+        """🔑 **Round 33c 的核心**：F2 的 eebm 与 F1 的 useEq 同名不同义。
+
+        取错会让 ``used_today`` 算出 6.70 而不是 30.83。
+        """
+        rows = ep.F2Daily.parse(
+            [{"dt": "2026-10-06", "eebm": 30.83, "useEq": 6.70}], "r"
+        )
+        assert rows[0]["zong_eq"] == 30.83
+
+    def test_zong_falls_back_to_explicit_then_useEq(self) -> None:
+        for raw, expected in (
+            ({"dt": "d", "zong_eq": 5.0}, 5.0),
+            ({"dt": "d", "zongEq": 6.0}, 6.0),
+            ({"dt": "d", "useEq": 7.0}, 7.0),
+        ):
+            assert ep.F2Daily.parse([raw], "r")[0]["zong_eq"] == expected
+
+    def test_skips_rows_without_dt(self) -> None:
+        assert ep.F2Daily.parse([{"esbm": 1.0}, {"dt": ""}], "r") == []
+
+
+class TestF3Parse:
+    def test_maps_fields(self) -> None:
+        rows = ep.F3Violation.parse(
+            [{"dt": "2026-10-06 10:00:00", "wg_reason": "大功率", "wg_power": 1.2}],
+            "room-1",
+        )
+        assert rows[0]["wg_reason"] == "大功率"
+        assert rows[0]["wg_power"] == 1.2
+
+    def test_accepts_label_fallbacks(self) -> None:
+        rows = ep.F3Violation.parse(
+            [{"dt": "d", "wgReasonLabel": "超载", "wgPower": 2.0}], "r"
+        )
+        assert rows[0]["wg_reason"] == "超载" and rows[0]["wg_power"] == 2.0
+
+    def test_skips_rows_missing_primary_key_parts(self) -> None:
+        """主键是 (roomId, dt, wg_reason) —— 缺一不可。"""
+        assert ep.F3Violation.parse([{"dt": "d"}, {"wg_reason": "x"}], "r") == []
+
+
+class TestF5Parse:
+    def test_maps_fields(self) -> None:
+        rows = ep.F5Pay.parse(
+            [{"dt": "2026-09-07", "pay_type": "充值", "fee_type": "电费",
+              "money": 50.0}], "room-1",
+        )
+        assert rows[0]["money"] == 50.0 and rows[0]["pay_type"] == "充值"
+
+    def test_accepts_label_fallbacks(self) -> None:
+        rows = ep.F5Pay.parse(
+            [{"dt": "d", "payTypeLabel": "退款", "feeTypeLabel": "电费"}], "r"
+        )
+        assert rows[0]["pay_type"] == "退款"
+
+    def test_skips_rows_missing_any_key_part(self) -> None:
+        assert ep.F5Pay.parse([{"dt": "d", "pay_type": "x"}], "r") == []
+        assert ep.F5Pay.parse([{"dt": "d", "fee_type": "y"}], "r") == []
+
+    def test_fee_type_defaults_to_all(self) -> None:
+        """📌 legacy 默认 -1 是「只查退费」，把每条充值都过滤掉了。"""
+        assert ep.F5Pay().fee_type == 0
+
+
+class TestIsMeterOnline:
+    def test_online_values(self) -> None:
+        for value in ("在线", "正常", "通讯正常"):
+            assert ep.is_meter_online({"runStatus": value}) is True, value
+
+    def test_offline_for_unknown_value(self) -> None:
+        assert ep.is_meter_online({"runStatus": "离线"}) is False
+
+    def test_missing_field_counts_as_offline(self) -> None:
+        """📌 B6：缺字段也算离线 —— 宁可误报也不能静默失败。"""
+        assert ep.is_meter_online({}) is False
+        assert ep.is_meter_online(None) is False
+
+    def test_accepts_snake_case(self) -> None:
+        assert ep.is_meter_online({"run_status": "在线"}) is True
+
+
+class TestEndpointRegistry:
+    def test_five_endpoints_in_order(self) -> None:
+        assert [e.key for e in ep.ENDPOINTS] == ["F1", "F4", "F2", "F3", "F5"]
+
+    def test_throttles_match_the_contract(self) -> None:
+        by_key = {e.key: e.interval_sec for e in ep.ENDPOINTS}
+        assert by_key["F1"] is None  # 每次抓取
+        assert by_key["F4"] is None
+        assert by_key["F2"] == 24 * 3600
+        assert by_key["F3"] == 3600
+        assert by_key["F5"] == 24 * 3600
+
+    def test_paths_are_the_real_ones(self) -> None:
+        """路径是从 legacy 提取的 —— 写错就抓不到任何数据。"""
+        for endpoint in ep.ENDPOINTS:
+            assert endpoint.path.startswith("/campus/webchat/"), endpoint.key
+
+    def test_satisfies_endpoint_protocol(self) -> None:
+        for endpoint in ep.ENDPOINTS:
+            for attr in ("key", "interval_sec", "path"):
+                assert hasattr(endpoint, attr), endpoint.key
+            for method in ("fetch", "persist"):
+                assert callable(getattr(endpoint, method)), endpoint.key
+
+
+class TestPersist:
+    def test_f1_writes_a_record(self, tmp_db, frozen_now) -> None:
+        from starwatt.db.repositories import RecordRepo
+
+        ep.F1Live().persist([{
+            "ts": "2026-10-06 12:00:00", "read_time": "2026-10-06 11:59:00",
+            "remain": 42.0,
+        }])
+        latest = RecordRepo.latest()
+        assert latest is not None and latest.remain == 42.0
+
+    def test_f2_writes_daily_elec(self, tmp_db) -> None:
+        from starwatt.db.repositories import DailyElecRepo
+
+        rows = ep.F2Daily.parse([{"dt": "2026-10-06", "eebm": 30.83}], "room-1")
+        ep.F2Daily().persist(rows)
+        assert DailyElecRepo.recent("room-1", days=365)[0].zong_eq == 30.83
+
+    def test_f3_writes_violation(self, tmp_db) -> None:
+        from starwatt.db.repositories import ViolationRepo
+
+        rows = ep.F3Violation.parse(
+            [{"dt": "2026-10-06", "wg_reason": "大功率", "wg_power": 1.2}], "room-1"
+        )
+        ep.F3Violation().persist(rows)
+        assert ViolationRepo.recent("room-1", days=365)[0].wg_reason == "大功率"
+
+    def test_f5_writes_pay(self, tmp_db) -> None:
+        from starwatt.db.repositories import PayRepo
+
+        rows = ep.F5Pay.parse(
+            [{"dt": "2026-09-07", "pay_type": "充值", "fee_type": "电费",
+              "money": 50.0}], "room-1",
+        )
+        ep.F5Pay().persist(rows)
+        assert PayRepo.recent("room-1", days=365)[0].money == 50.0
+
+    def test_f4_writes_run_status(self, tmp_db) -> None:
+        from starwatt.db.repositories import RunStatusRepo
+
+        ep.F4RunStatus().persist(
+            [{"roomId": "room-1", "data": {"vol": 220.1, "runStatus": "在线"}}]
+        )
+        assert RunStatusRepo.get("room-1").run_status == "在线"
+
+    def test_persist_ignores_empty_room(self, tmp_db) -> None:
+        """空房间号不能写入（否则会污染一个无名房间的数据）。"""
+        ep.F2Daily().persist([{"roomId": "", "dt": "2026-10-06"}])
+        ep.F3Violation().persist([{"roomId": "", "dt": "d", "wg_reason": "x"}])
