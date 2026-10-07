@@ -40,10 +40,11 @@ import threading
 from typing import Any
 
 from starwatt.config_registry import registry
-from starwatt.config_registry.secrets import decrypt, encrypt, mask
+from starwatt.config_registry.secrets import decrypt, encrypt, is_encrypted, mask
 from starwatt.config_registry.types import Kind, Setting, T, ValidationError
 from starwatt.config_registry.types import validate_value as _validate
 from starwatt.db.repositories import MetaRepo
+from starwatt.logging_setup import forget_secret, register_secret
 
 logger = logging.getLogger("starwatt.config")
 
@@ -59,6 +60,7 @@ __all__ = [
     "invalidate",
     "purge_removed",
     "raw",
+    "register_all_secrets",
     "set",
     "set_many",
     "set_state",
@@ -202,6 +204,40 @@ def invalidate(key: str | None = None) -> None:
             _cache.pop(key, None)
 
 
+def _remember_secret(setting: Setting, value: Any) -> None:
+    """secret 写入时把明文登记到日志脱敏表；换值时注销旧值。
+
+    这是 Q20 铁律（secret 不得出现在日志里）的**第一道防线** ——
+    即使某个程序员忘了脱敏、直接把配置值打进日志，输出里也只会是 ``***``。
+    """
+    if not setting.secret:
+        return
+    previous = MetaRepo.get(setting.key)
+    if previous:
+        forget_secret(decrypt(previous) if is_encrypted(previous) else previous)
+    register_secret(str(value))
+
+
+def register_all_secrets() -> int:
+    """把库里所有 secret 项的明文登记进脱敏表，返回登记条数。
+
+    应在**启动时**调用一次：否则重启后、用户尚未重新保存配置之前，
+    旧 secret 在日志里是不受保护的。
+    """
+    count = 0
+    for key, setting in registry.REGISTRY.items():
+        if not setting.secret:
+            continue
+        text = MetaRepo.get(key)
+        if not text:
+            continue
+        plain = decrypt(text) if is_encrypted(text) else text
+        if plain:
+            register_secret(plain)
+            count += 1
+    return count
+
+
 def set(
     key: str,
     value: Any,
@@ -233,6 +269,7 @@ def set(
         )
 
     _validate(setting, value)
+    _remember_secret(setting, value)
     MetaRepo.set(key, _to_text(setting, value))
     invalidate(key)
 
@@ -266,6 +303,7 @@ def set_many(items: dict[str, Any]) -> dict[str, str]:
         except ValidationError as exc:
             errors[key] = exc.message
             continue
+        _remember_secret(setting, value)
         MetaRepo.set(key, _to_text(setting, value))
         invalidate(key)
     return errors

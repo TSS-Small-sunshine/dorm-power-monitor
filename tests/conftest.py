@@ -66,7 +66,16 @@ def settings_override(monkeypatch, tmp_path: Path):
     # 不写的话它会以为密钥缺失，进而往真实 .env 追加一行（污染开发机）。
     monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret-key-not-for-production")
     cfg.override_settings(overridden)
+
+    # ⚠️ 配置缓存是**进程级全局**的。换库时必须清掉，否则上一个用例读到的
+    # 值（例如 log_overrides={"db":"DEBUG"}）会静默泄漏到下一个用例 ——
+    # 这类跨用例污染会让测试结果变得不可信。
+    from starwatt.config_registry import store as cfg_store
+
+    cfg_store.invalidate()
+
     yield overridden
+    cfg_store.invalidate()
     cfg.override_settings(None)
 
 
