@@ -1,5 +1,5 @@
 [Unit]
-Description=Dorm power monitor (Flask dashboard)
+Description=StarWatt 星瓦 · 宿舍电量监控（gunicorn + 进程内调度）
 After=network.target
 
 [Service]
@@ -14,7 +14,12 @@ Group=www-data
 
 WorkingDirectory=/opt/dorm-power-monitor
 EnvironmentFile=-/opt/dorm-power-monitor/.env
-ExecStart=/opt/dorm-power-monitor/.venv/bin/python /opt/dorm-power-monitor/web.py
+# B2：gunicorn（workers=1 + preload_app=False）—— 抓取调度由
+# gunicorn.conf.py 的 post_fork 在 worker 内启动（B3）。
+# 旧写法 `python web.py`（Flask dev server）已废弃：reloader 会让调度器
+# 启动两次，且 dev/prod 行为不一致。
+ExecStart=/opt/dorm-power-monitor/.venv/bin/gunicorn \
+            -c /opt/dorm-power-monitor/gunicorn.conf.py web:app
 
 Restart=always
 RestartSec=5
