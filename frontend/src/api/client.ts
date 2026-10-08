@@ -22,11 +22,15 @@
  * 都应该跳改密页，而不是各自 try/catch。见 `stores/auth.ts` 的 `handle()`。
  */
 import type {
+  DailyPayload,
   DataPayload,
   LivePayload,
   LoginPayload,
   MePayload,
+  PaymentPayload,
+  RefreshPayload,
   SitePayload,
+  ViolationPayload,
 } from './types'
 
 /** 后端返回的错误码 → 中文提示（未知码回落到 HTTP 状态说明） */
@@ -136,5 +140,20 @@ export const api = {
 
   data: (hours = 24) => request<DataPayload>(`/api/data?hours=${hours}`),
 
+  /** 记录区间筛选（E8）：显式 start/end 优先于 hours */
+  dataRange: (start: string, end: string) =>
+    request<DataPayload>(
+      `/api/data?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+    ),
+
   live: () => request<LivePayload>('/api/live'),
+
+  violations: (days = 30) => request<ViolationPayload>(`/api/violations?days=${days}`),
+
+  payments: (days = 90) => request<PaymentPayload>(`/api/payments?days=${days}`),
+
+  daily: (days = 30) => request<DailyPayload>(`/api/daily?days=${days}`),
+
+  /** 手动刷新（E13）—— 管理员会话 + CSRF；服务端抓取但**不推送飞书** */
+  refresh: () => request<RefreshPayload>('/api/refresh', { method: 'POST' }),
 }
