@@ -383,3 +383,28 @@ def purge_removed() -> int:
     if removed:
         invalidate()
     return removed
+
+
+def reset_to_defaults() -> int:
+    """把全部 ``CONFIG`` 项恢复成注册表默认值（**删除** meta 里的覆盖值）。
+
+    为什么是「删除」而不是「写回默认值」：未写入的键本来就会回落到
+    ``Setting.default``（见模块 docstring 第 1 条），删掉才是真正干净的
+    「恢复出厂」。``STATE`` / ``CACHE``（游标、缓存）**不受影响** ——
+    重置配置不该让抓取历史「回到过去」。
+
+    Returns:
+        被重置的键数量。
+    """
+    existing = MetaRepo.all()
+    keys = [
+        key
+        for key, setting in registry.REGISTRY.items()
+        if setting.kind is Kind.CONFIG and key in existing
+    ]
+    for key in keys:
+        MetaRepo.delete(key)
+    if keys:
+        invalidate()
+        logger.warning("config: 已重置 %d 项配置为默认值", len(keys))
+    return len(keys)

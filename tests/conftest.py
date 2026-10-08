@@ -9,6 +9,9 @@ M1 起本文件针对**新架构**（``starwatt/``）重写 —— 不再 import
 * ``tmp_db``           —— 在临时目录上 ``init()`` 一个空库，用完自动清理
 * ``frozen_now``       —— 冻结 ``starwatt.timeutil.now_cst()``，让时间相关断言确定
 * ``no_network``       —— 禁止真实网络调用（任何用例都不得联网）
+* ``web_app``          —— Flask 应用（隔离 DB）
+* ``admin_client``     —— 已登录**管理员**的测试客户端（含 CSRF 头）
+* ``viewer_client``    —— 已登录**普通用户**的测试客户端（验证 403）
 """
 from __future__ import annotations
 
@@ -118,3 +121,68 @@ def no_network(monkeypatch):
     monkeypatch.setattr(requests, "get", _boom, raising=False)
     monkeypatch.setattr(requests, "post", _boom, raising=False)
     yield
+
+
+@pytest.fixture
+def web_app(settings_override, tmp_db):
+    """Flask 应用（隔离 DB）+ 调度器单例复位。
+
+    ``import web`` 会执行 ``setup_logging()`` 与 ``create_app()``；
+    模块只导入一次，但 DB 路径是**每次请求**从 ``get_settings()`` 读的，
+    所以 ``tmp_db`` 的隔离仍然生效。
+
+    📌 放在 conftest 而不是某个测试文件里：``test_web_entry`` 与
+    ``test_web_api`` 都要用它。
+    """
+    import web
+
+    web._scheduler = None
+    yield web.app
+    web._scheduler = None
+
+
+#: 测试用密码（满足强度策略：≥8 位 + 大写 + 数字 + 特殊字符）
+GOOD_PASSWORD = "Str0ng-Pass!"
+
+
+@pytest.fixture
+def admin_client(web_app):
+    """**已登录管理员**的测试客户端（Cookie + CSRF 头都已就位）。
+
+    走真实登录端点而不是伪造会话 —— 这样测试顺带覆盖了登录链路，
+    也保证「配置 API 只能管理员访问」的断言是真的在测访问控制。
+
+    Returns:
+        已带 ``dorm_session`` Cookie 与 ``X-CSRF-Token`` 头的 test client。
+    """
+    from starwatt.auth import csrf as csrf_mod
+    from starwatt.auth import service as auth
+    from starwatt.auth.constants import ROLE_ADMIN
+
+    auth.create_user("admin", GOOD_PASSWORD, role=ROLE_ADMIN)
+    client = web_app.test_client()
+    response = client.post(
+        "/api/auth/login", json={"username": "admin", "password": GOOD_PASSWORD}
+    )
+    assert response.status_code == 200, response.get_json()
+    token = response.get_json()["token"]
+    client.environ_base["HTTP_X_CSRF_TOKEN"] = csrf_mod.issue(token)
+    return client
+
+
+@pytest.fixture
+def viewer_client(web_app):
+    """**已登录普通用户**的测试客户端（用于验证 403）。"""
+    from starwatt.auth import csrf as csrf_mod
+    from starwatt.auth import service as auth
+    from starwatt.auth.constants import ROLE_VIEWER
+
+    auth.create_user("viewer", GOOD_PASSWORD, role=ROLE_VIEWER)
+    client = web_app.test_client()
+    response = client.post(
+        "/api/auth/login", json={"username": "viewer", "password": GOOD_PASSWORD}
+    )
+    assert response.status_code == 200, response.get_json()
+    token = response.get_json()["token"]
+    client.environ_base["HTTP_X_CSRF_TOKEN"] = csrf_mod.issue(token)
+    return client
