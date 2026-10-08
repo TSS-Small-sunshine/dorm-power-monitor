@@ -22,6 +22,15 @@
  * 都应该跳改密页，而不是各自 try/catch。见 `stores/auth.ts` 的 `handle()`。
  */
 import type {
+  AdminUser,
+  AuditEntry,
+  ConfigExportPayload,
+  ConfigImportResult,
+  ConfigResetResult,
+  ConfigSchemaPayload,
+  ConfigTestResult,
+  ConfigUpdateResult,
+  ConfigValuesPayload,
   DailyPayload,
   DataPayload,
   LivePayload,
@@ -80,10 +89,18 @@ interface RequestOptions {
   body?: unknown
   /** 显式跳过 CSRF（登录不需要 —— 那时还没有会话） */
   skipCsrf?: boolean
+  /**
+   * 额外视为成功的状态码。
+   *
+   * 配置 PUT / import 用 **207**（Multi-Status）表达「部分成功」：
+   * 逐键独立校验，成功的生效、失败的带原因回来。对前端来说这是一次
+   * **成功**的请求（有结果可展示），不能按失败抛异常。
+   */
+  okStatuses?: number[]
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, skipCsrf = false } = options
+  const { method = 'GET', body, skipCsrf = false, okStatuses = [] } = options
   const headers: Record<string, string> = { Accept: 'application/json' }
 
   if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -109,7 +126,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     }
   }
 
-  if (!response.ok) {
+  if (!response.ok && !okStatuses.includes(response.status)) {
     const data = payload as { error?: string }
     throw new ApiError(response.status, data.error ?? 'unknown')
   }
@@ -156,4 +173,63 @@ export const api = {
 
   /** 手动刷新（E13）—— 管理员会话 + CSRF；服务端抓取但**不推送飞书** */
   refresh: () => request<RefreshPayload>('/api/refresh', { method: 'POST' }),
+
+  // -------------------------------------------------------------------------
+  // 配置中心（Q15 / 5.6）—— 七个端点
+  // -------------------------------------------------------------------------
+  configSchema: () => request<ConfigSchemaPayload>('/api/admin/config/schema'),
+
+  configValues: () => request<ConfigValuesPayload>('/api/admin/config'),
+
+  /** 批量更新：**207 也算成功**（逐键独立，部分失败带原因回来） */
+  configUpdate: (values: Record<string, unknown>) =>
+    request<ConfigUpdateResult>('/api/admin/config', {
+      method: 'PUT',
+      body: values,
+      okStatuses: [207],
+    }),
+
+  configTest: (target: string) =>
+    request<ConfigTestResult>('/api/admin/config/test', { method: 'POST', body: { target } }),
+
+  configExport: (includeSecrets = false) =>
+    request<ConfigExportPayload>(
+      `/api/admin/config/export${includeSecrets ? '?include_secrets=1' : ''}`,
+    ),
+
+  /** 导入（合并语义；脱敏值会被后端跳过） */
+  configImport: (payload: unknown, allowSecrets = false) =>
+    request<ConfigImportResult>('/api/admin/config/import', {
+      method: 'POST',
+      body: { payload, allow_secrets: allowSecrets },
+      okStatuses: [207],
+    }),
+
+  configReset: () =>
+    request<ConfigResetResult>('/api/admin/config/reset', { method: 'POST' }),
+
+  // -------------------------------------------------------------------------
+  // 用户 / 审计（5.5）
+  // -------------------------------------------------------------------------
+  users: () => request<{ users: AdminUser[] }>('/api/admin/users'),
+
+  createUser: (body: { username: string; password: string; role?: string }) =>
+    request<{ ok: boolean; user: AdminUser }>('/api/admin/users', { method: 'POST', body }),
+
+  updateUser: (id: number, body: { role?: string; disabled?: boolean }) =>
+    request<{ ok: boolean }>(`/api/admin/users/${id}`, { method: 'PATCH', body }),
+
+  resetUserPassword: (id: number, password: string) =>
+    request<{ ok: boolean }>(`/api/admin/users/${id}/password`, {
+      method: 'POST',
+      body: { password },
+    }),
+
+  deleteUser: (id: number) =>
+    request<{ ok: boolean }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+
+  audit: (limit = 100, action = '') =>
+    request<{ entries: AuditEntry[] }>(
+      `/api/admin/audit?limit=${limit}${action ? `&action=${encodeURIComponent(action)}` : ''}`,
+    ),
 }

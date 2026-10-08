@@ -13,6 +13,7 @@
  * 否则切段会重复请求同一份数据。
  */
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import BaseButton from '@/components/BaseButton.vue'
 import SectionTabs from '@/components/SectionTabs.vue'
@@ -49,10 +50,13 @@ const canRefresh = computed(() => auth.isAdmin)
             刷新
           </BaseButton>
           <ThemeToggle />
-          <!--
-            「管理」入口在 5.5（Admin 5 页）落地后再挂上 —— 现在放一个
-            指向未实现路由的链接，用户点进去只会看到 404。
-          -->
+          <RouterLink
+            v-if="auth.isAdmin"
+            to="/admin"
+            class="rounded-control border border-border px-2.5 py-1.5 text-sm text-content transition hover:bg-surface"
+          >
+            管理
+          </RouterLink>
           <button
             type="button"
             class="rounded-control border border-border px-2.5 py-1.5 text-sm text-content transition hover:bg-surface"
