@@ -137,3 +137,116 @@ export interface RefreshPayload {
   records: number
   error: string | null
 }
+
+// ---------------------------------------------------------------------------
+// 配置中心（Q15 / 5.6）—— 契约来自 starwatt/config_registry/registry.py 的 schema()
+// ---------------------------------------------------------------------------
+
+/** 10 种字段类型（每种对应一个控件，见 components/config/ConfigField.vue） */
+export type ConfigValueType =
+  | 'bool'
+  | 'duration' // 秒数（整数）
+  | 'enum' // choices 里选一个
+  | 'float'
+  | 'int'
+  | 'json' // 对象 / 数组（textarea）
+  | 'secret' // 脱敏显示；只在改动时提交
+  | 'str'
+  | 'time' // HH:MM
+  | 'url'
+
+/** ``kind``：``config`` 可改；``state`` 是运行时状态（只读展示） */
+export type ConfigKind = 'config' | 'state'
+
+export interface ConfigSetting {
+  key: string
+  label: string
+  group: string
+  type: ConfigValueType
+  kind: ConfigKind
+  default: unknown
+  /** 中文说明（可能带 📌/🔒 等标记） */
+  help: string
+  /** 校验规则串（``len:1..32`` / ``regex:...`` / ``url`` / ``enum:a|b`` / ``json`` / ``none``） */
+  validate: string
+  /** 改动后需要重启才生效（UI 上要明确提示） */
+  requires_restart: boolean
+  /** 非空时：只有该键为真才显示本项（条件显示） */
+  depends_on: string | null
+  /** 高级项（默认折叠） */
+  advanced: boolean
+  choices: string[]
+  secret: boolean
+  /** ``false`` = 只读（state 项） */
+  user_editable: boolean
+}
+
+export interface ConfigGroup {
+  key: string
+  label: string
+  settings: ConfigSetting[]
+}
+
+export interface ConfigSchemaPayload {
+  groups: ConfigGroup[]
+  total: number
+}
+
+/** ``GET /api/admin/config`` —— secret 默认是 ``••••1234`` */
+export interface ConfigValuesPayload {
+  values: Record<string, unknown>
+  /** 当前开启的开关 key 列表（5.7 用） */
+  flags: string[]
+}
+
+/** ``PUT /api/admin/config`` —— 逐键独立，部分失败回 207 */
+export interface ConfigUpdateResult {
+  applied: string[]
+  errors: Record<string, string>
+}
+
+export interface ConfigExportPayload {
+  format: string
+  exported_at: string
+  include_secrets: boolean
+  config: Record<string, unknown>
+}
+
+/** ``POST /api/admin/config/import`` —— 合并语义 */
+export interface ConfigImportResult {
+  applied: string[]
+  skipped: string[]
+  errors: Record<string, string>
+}
+
+export interface ConfigTestResult {
+  ok: boolean
+  target: string
+  error: string | null
+}
+
+export interface ConfigResetResult {
+  reset: number
+}
+
+/** ``GET /api/admin/users`` —— 管理后台的用户行（**不含密码哈希**） */
+export interface AdminUser {
+  id: number
+  username: string
+  role: 'admin' | 'viewer'
+  created_at: string | null
+  last_login_at: string | null
+  disabled: boolean
+  must_change_password: boolean
+}
+
+/** ``GET /api/admin/audit`` —— 审计行 */
+export interface AuditEntry {
+  id: number
+  action: string
+  user_id: number | null
+  target: string | null
+  ip: string | null
+  created_at: string
+  details: Record<string, unknown> | null
+}

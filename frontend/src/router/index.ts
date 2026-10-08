@@ -44,6 +44,38 @@ const router = createRouter({
       meta: { title: '修改密码' },
     },
     {
+      path: '/admin',
+      component: () => import('@/views/admin/AdminShell.vue'),
+      meta: { title: '管理', admin: true },
+      children: [
+        { path: '', redirect: { name: 'admin-config' } },
+        {
+          path: 'config',
+          name: 'admin-config',
+          component: () => import('@/views/admin/AdminConfigView.vue'),
+          meta: { title: '配置中心', admin: true },
+        },
+        {
+          path: 'users',
+          name: 'admin-users',
+          component: () => import('@/views/admin/AdminUsersView.vue'),
+          meta: { title: '用户', admin: true },
+        },
+        {
+          path: 'test',
+          name: 'admin-test',
+          component: () => import('@/views/admin/AdminTestView.vue'),
+          meta: { title: '连通测试', admin: true },
+        },
+        {
+          path: 'audit',
+          name: 'admin-audit',
+          component: () => import('@/views/admin/AdminAuditView.vue'),
+          meta: { title: '审计日志', admin: true },
+        },
+      ],
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
       component: () => import('@/views/NotFoundView.vue'),
@@ -70,6 +102,11 @@ router.beforeEach(async (to) => {
 
   if (auth.mustChangePassword && to.name !== 'password') {
     return { name: 'password' }
+  }
+
+  // 管理分支：前端只隐藏入口（体验），后端 admin_access 才是安全边界
+  if (to.meta.admin && !auth.isAdmin) {
+    return { name: 'dashboard' }
   }
 
   // 改完密就不该再停留在改密页
