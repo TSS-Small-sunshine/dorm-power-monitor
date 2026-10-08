@@ -14,16 +14,26 @@
 启动守卫（B3 防线 3）
 =====================
 
-``_MASTER_PID`` 是**模块导入时**的 PID。gunicorn 的 ``post_fork`` 在
-**worker 进程**里执行，此时 PID 已经变了；如果没变，说明模块是在 master
-里导入的（``preload_app=True`` 或有人用 ``app.run()``），此时启动调度器会
-「fork 后线程丢失 → 调度器静默不工作」。守卫把这种误配变成**启动即失败**，
-而不是静默出错。
+⚠️ **不能用「模块导入时的 PID」当 master**。gunicorn 26 的真实顺序是
+（`arbiter.py` → `workers/base.py`）：
 
 ::
 
-    preload_app=False → 导入发生在 worker → PID 必然不同 → 正常启动
-    preload_app=True  → 导入发生在 master → PID 相同    → RuntimeError
+    ① master fork 出子进程
+    ② 子进程调用 post_fork()      ← 我们的钩子在这里 import web
+    ③ 子进程调用 load_wsgi()      ← 应用模块此时才被导入
+
+也就是说 ``preload_app=False`` 时 ``web`` 是在 **worker** 里被导入的，
+「导入时 PID」就等于 worker 自己的 PID —— 用它做守卫会**每次启动都误判**。
+
+正确做法：gunicorn 的 ``post_fork(server, worker)`` 会把 **arbiter** 传进来，
+``server.pid`` 才是 master 的 PID。钩子把它显式传给
+:func:`start_scheduler_once`，于是「在 master 里启动」变成一个可判定的事实：
+
+::
+
+    worker 进程 → os.getpid() != server.pid → 正常启动
+    master 进程 → os.getpid() == server.pid → RuntimeError（启动即失败）
 
 幂等守卫是第二层：``post_fork`` 理论上每个 worker 只调一次，但
 ``--reload`` / 反复调用时必须有副作用为零的保证。
@@ -41,9 +51,6 @@ logger: logging.Logger = get_logger("web")
 
 #: gunicorn 要找的 WSGI 应用对象（``web:app``）
 app = create_app()
-
-#: 模块导入时的 PID —— 见模块 docstring 的「启动守卫」
-_MASTER_PID = os.getpid()
 
 #: 调度器单例（模块级，进程内唯一）
 _scheduler = None
@@ -73,23 +80,31 @@ def startup_once() -> dict:
     return _startup_report
 
 
-def start_scheduler_once() -> None:
+def start_scheduler_once(*, master_pid: int | None = None) -> None:
     """在 **worker 进程内**幂等启动调度器（由 gunicorn ``post_fork`` 调用）。
 
+    Args:
+        master_pid: gunicorn **arbiter（master）** 的 PID —— 由
+            ``post_fork(server, worker)`` 的 ``server.pid`` 传入。
+            传了它才能判定「我是不是 master」；见模块 docstring 的说明
+            （**不能**用导入时 PID 代替）。
+
     Raises:
-        RuntimeError: 在 master 进程里被调用（``preload_app`` 误配成 ``True``，
-            或有人改回 ``app.run()``）。这是**故意的**：宁可启动失败，
-            也不要「看着在跑、其实没抓」。
+        RuntimeError: 在 master 进程里被调用（``master_pid`` 与本进程 PID 相同）。
+            这是**故意的**：宁可启动失败，也不要「看着在跑、其实没抓」。
     """
     global _scheduler
     if _scheduler is not None:
         return  # 幂等：重复调用无副作用
 
-    if os.getpid() == _MASTER_PID:
+    if master_pid is not None and os.getpid() == master_pid:
         raise RuntimeError(
-            "调度器不得在 master 进程启动：请保持 gunicorn 的 preload_app=False，"
-            "并且不要使用 app.run()。"
+            f"调度器不得在 master 进程（pid={master_pid}）启动："
+            "请确认 gunicorn 的 preload_app=False，并且不要使用 app.run()。"
         )
+    if master_pid is None:
+        # 没有 arbiter 信息（手工调用 / 测试 / CLI）→ 放行但留痕
+        logger.log(25, "start_scheduler_once 未收到 master_pid，跳过 master 判定")  # NOTICE
 
     # 进程启动时确保表结构存在（幂等）—— 调度器要读 meta 里的配置
     # （scrape_interval_sec）与状态键；M4 的 app 启动也会调用它。

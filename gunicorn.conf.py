@@ -60,10 +60,15 @@ loglevel = "info"
 
 
 def post_fork(server, worker):
-    """防线 2：在 worker 进程内启动调度器（见 starwatt/scheduler.py）。"""
+    """防线 2：在 worker 进程内启动调度器（见 starwatt/scheduler.py）。
+
+    ⚠️ 必须把 **arbiter 的 PID** 传进去：gunicorn 调用本钩子时**应用模块还没
+    导入**（顺序是 post_fork → load_wsgi），所以「导入时 PID」不能用来判断
+    自己是不是 master —— 详见 ``web.py`` 的模块 docstring。
+    """
     from web import start_scheduler_once
 
-    start_scheduler_once()
+    start_scheduler_once(master_pid=server.pid)
 
 
 def worker_int(worker):

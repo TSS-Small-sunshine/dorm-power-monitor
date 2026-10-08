@@ -72,56 +72,89 @@ class TestApp:
         assert payload["version"].startswith("starwatt")
 
     def test_import_does_not_start_the_scheduler(self, web_entry) -> None:
-        """B3：模块导入（master 里）绝不能启动调度器。"""
+        """B3：模块导入绝不能启动调度器（起停只能由 gunicorn 钩子驱动）。"""
         assert web_entry.scheduler_running() is False
 
-    def test_master_pid_is_the_import_pid(self, web_entry) -> None:
-        assert web_entry._MASTER_PID == os.getpid()
+    def test_no_app_run_in_entry_module(self) -> None:
+        """**开发与生产都用 gunicorn** —— 入口模块里不许**调用** ``app.run()``。
+
+        这条不是洁癖：Flask dev server 的 reloader 会 fork 一个子进程再导入
+        一次模块，调度器就会起两次（重复抓取），而运行时不报任何错。
+
+        用 AST 判断「调用」而不是 grep 文本 —— docstring 里说明「为什么不用
+        app.run()」是合法的，不能因此判红。
+        """
+        import ast
+
+        tree = ast.parse((PROJ / "web.py").read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "app"
+        ]
+        assert calls == [], f"web.py 里出现了 app.run() 调用：{calls}"
 
 
 # ===========================================================================
 # 调度器启动守卫（B3 防线 3）
 # ===========================================================================
 class TestStartSchedulerOnce:
-    def test_refuses_to_start_in_master(self, web_entry, monkeypatch) -> None:
-        """误配（``preload_app=True`` / ``app.run()``）→ **启动即失败**。"""
-        monkeypatch.setattr(web_entry, "_MASTER_PID", os.getpid())
+    """守卫的判据是 **gunicorn arbiter 的 PID**，不是「模块导入时的 PID」。
+
+    gunicorn 26 的顺序是 ``post_fork()`` → ``load_wsgi()``：``preload_app=False``
+    时 ``web`` 是在 worker 里被导入的，所以「导入时 PID」恒等于 worker 自己的
+    PID —— 早期版本用它当判据，结果是**每次启动都误判成 master 而崩溃**
+    （用 `python -c "from web import start_scheduler_once; start_scheduler_once()"`
+    就能复现）。现在由 ``post_fork`` 传入 ``server.pid``，判据才成立。
+    """
+
+    def test_refuses_to_start_in_master(self, web_entry) -> None:
+        """在 master 进程里调用（``master_pid`` == 本进程）→ **启动即失败**。"""
         with pytest.raises(RuntimeError, match="master"):
-            web_entry.start_scheduler_once()
+            web_entry.start_scheduler_once(master_pid=os.getpid())
 
-    def test_starts_once_in_worker(self, web_entry, monkeypatch) -> None:
+    def test_starts_in_worker(self, web_entry, monkeypatch) -> None:
+        """worker 进程：``master_pid`` 与自己的 PID 不同 → 正常启动。"""
         fake = FakeScheduler()
-        monkeypatch.setattr(web_entry, "_MASTER_PID", -1)  # 模拟 fork 后的 worker
-        monkeypatch.setattr(
-            "starwatt.scheduler.build_scheduler", lambda: fake
-        )
+        monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
 
-        web_entry.start_scheduler_once()
+        web_entry.start_scheduler_once(master_pid=os.getpid() + 1)
 
         assert fake.started == 1
         assert web_entry.scheduler_running() is True
 
+    def test_first_import_then_start_works(self, web_entry, monkeypatch) -> None:
+        """复现 gunicorn 的真实顺序：**先导入、再启动**也必须能起来。
+
+        这正是修掉的那个 P0：旧守卫在这种顺序下抛 RuntimeError，
+        于是 ``gunicorn web:app`` 每个 worker 都起不来。
+        """
+        fake = FakeScheduler()
+        monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
+
+        web_entry.start_scheduler_once(master_pid=os.getpid() - 1)  # 任意 ≠ 自己
+
+        assert fake.started == 1
+
     def test_is_idempotent(self, web_entry, monkeypatch) -> None:
         """``post_fork`` 被重复调用时不得产生第二个调度器。"""
         fake = FakeScheduler()
-        monkeypatch.setattr(web_entry, "_MASTER_PID", -1)
-        monkeypatch.setattr(
-            "starwatt.scheduler.build_scheduler", lambda: fake
-        )
+        monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
 
-        web_entry.start_scheduler_once()
-        web_entry.start_scheduler_once()
+        web_entry.start_scheduler_once(master_pid=os.getpid() + 1)
+        web_entry.start_scheduler_once(master_pid=os.getpid() + 1)
 
         assert fake.started == 1
 
     def test_stop_shuts_down_and_resets(self, web_entry, monkeypatch) -> None:
         fake = FakeScheduler()
-        monkeypatch.setattr(web_entry, "_MASTER_PID", -1)
-        monkeypatch.setattr(
-            "starwatt.scheduler.build_scheduler", lambda: fake
-        )
+        monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
 
-        web_entry.start_scheduler_once()
+        web_entry.start_scheduler_once(master_pid=os.getpid() + 1)
         web_entry.stop_scheduler()
 
         assert fake.shutdowns == 1
@@ -172,22 +205,41 @@ class TestGunicornHooks:
         spec.loader.exec_module(module)
         return module
 
+    @staticmethod
+    def _server(pid: int):
+        """gunicorn 传给钩子的 arbiter（只需要 ``.pid``）。"""
+
+        class _Arbiter:
+            pass
+
+        arbiter = _Arbiter()
+        arbiter.pid = pid
+        return arbiter
+
     def test_post_fork_starts_the_scheduler(self, web_entry, monkeypatch) -> None:
         fake = FakeScheduler()
-        monkeypatch.setattr(web_entry, "_MASTER_PID", -1)  # 模拟 fork 后的 worker
         monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
 
-        self._load().post_fork(None, None)  # gunicorn 传 (server, worker)
+        # gunicorn 传 (server, worker)；server.pid 是 master 的 PID
+        self._load().post_fork(self._server(os.getpid() + 1), None)
 
         assert fake.started == 1
 
+    def test_post_fork_passes_the_arbiter_pid(self) -> None:
+        """钩子必须把 ``server.pid`` 传下去 —— 这是守卫唯一的判据来源。
+
+        如果哪天有人把参数删了，守卫就退化成「不判定」，
+        master 里误启动将不再报错（正是这个 P0 的反面）。
+        """
+        source = (PROJ / "gunicorn.conf.py").read_text(encoding="utf-8")
+        assert "master_pid=server.pid" in source
+
     def test_worker_int_stops_the_scheduler(self, web_entry, monkeypatch) -> None:
         fake = FakeScheduler()
-        monkeypatch.setattr(web_entry, "_MASTER_PID", -1)
         monkeypatch.setattr("starwatt.scheduler.build_scheduler", lambda: fake)
 
         conf = self._load()
-        conf.post_fork(None, None)
+        conf.post_fork(self._server(os.getpid() + 1), None)
         conf.worker_int(None)
 
         assert fake.shutdowns == 1
