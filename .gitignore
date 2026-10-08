@@ -32,6 +32,16 @@ backups/
 dist/
 build/
 
+# Frontend
+node_modules/
+# Vite 产物落到 static/（M5 §5.9）—— 由 CI / Docker 构建，不进仓库；
+# ⚠️ index.html 必须与 assets 一起忽略：只提交壳文件的话，里面的
+#    `/static/assets/index-<hash>.js` 会 404，页面白屏且很难看出原因。
+#    字体（static/fonts/）是仓库资产，不受影响。
+/static/index.html
+/static/assets/
+/static/.vite/
+
 # IDE
 .vscode/
 .idea/
