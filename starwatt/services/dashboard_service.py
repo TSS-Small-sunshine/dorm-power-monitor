@@ -40,22 +40,33 @@ from starwatt.config_registry import get_int, get_str, raw
 from starwatt.db.coerce import coerce_float, coerce_str
 from starwatt.db.repositories import (
     DailyElecRepo,
+    PayRepo,
     RecordRepo,
     RunStatusRepo,
+    ViolationRepo,
 )
 from starwatt.domain import metrics, pricing, thresholds
 
 logger = logging.getLogger("starwatt.web")
 
 __all__ = [
+    "DAILY_DAYS",
     "DEFAULT_SITE_NAME",
     "DEFAULT_THEME_COLOR",
     "HOURLY_GAP_SEC",
+    "PAY_DAYS",
+    "PAY_LIMIT",
+    "VIOLATION_DAYS",
+    "daily_usage",
     "history",
     "live",
     "monthly_projection",
+    "payments",
+    "refresh",
+    "room_id",
     "site",
     "stats",
+    "violations",
 ]
 
 #: ``hourly_used`` 的最小间隔（秒）—— legacy 的 3500s（≈1 小时）
@@ -66,6 +77,18 @@ DEFAULT_HOURS = 24
 
 #: 算「日均」用的窗口（7 天）—— 见 :func:`days_remaining` 的说明
 DAILY_AVG_HOURS = 168
+
+#: 违规列表窗口（E9：legacy 用 30 天）
+VIOLATION_DAYS = 30
+
+#: 缴费列表窗口（E10：legacy 用 90 天）
+PAY_DAYS = 90
+
+#: 缴费列表最多返回多少条（防一次性渲染几千行）
+PAY_LIMIT = 200
+
+#: 每日用电曲线窗口（E6：legacy 用 30 天）
+DAILY_DAYS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +375,108 @@ def cleanup_before(days: int) -> int:
 #: 品牌兜底值（注册表读不到时用 —— 见 :func:`site`）
 DEFAULT_SITE_NAME = "StarWatt 星瓦"
 DEFAULT_THEME_COLOR = "#1677ff"
+
+
+def room_id() -> str:
+    """当前房间号（``last_room_id``）—— 抓取成功时发布；读不到返回空串。
+
+    ⚠️ 与 :func:`starwatt.notify.reports._room_id` 同源同语义。这里独立实现
+    是为了让 Web 层不依赖 notify 包（notify 会拉起 Pillow / 渲染器）。
+    """
+    try:
+        return coerce_str(get_str("last_room_id", "")) or ""
+    except Exception:  # noqa: BLE001 —— 首次启动时 meta 表可能还不存在
+        logger.debug("读取 last_room_id 失败 —— 按「无房间」处理")
+        return ""
+
+
+def violations(days: int = VIOLATION_DAYS) -> dict[str, Any]:
+    """违规记录（E9）—— ``{"room_id", "days", "rows": [...]}``。
+
+    📌 ``wg_power`` 的单位是 **kW（瞬时功率）**，不是度（L7 修正）。
+    前端据此把 ``> 1 kW`` 标红（legacy 写的是 ``> 1000``，因为它按 W 显示
+    同一个数字 —— 这正是 L7：同一个值在仪表盘标 W、在飞书标 kW）。
+    """
+    room = room_id()
+    rows = ViolationRepo.recent(room, days=days) if room else []
+    return {
+        "room_id": room,
+        "days": days,
+        "rows": [
+            {
+                "dt": row.dt,
+                "reason": row.wg_reason,
+                "power": coerce_float(row.wg_power),
+            }
+            for row in rows
+        ],
+    }
+
+
+def payments(days: int = PAY_DAYS, limit: int = PAY_LIMIT) -> dict[str, Any]:
+    """缴费记录（E10）—— ``{"room_id", "days", "rows": [...]}``。
+
+    金额字段名沿用 ``money``（DB 列名）；``kind`` 是 ``pay_type`` 的别名
+    （与 legacy 的 ``db.models.Pay`` 契约一致，见 models.py）。
+    """
+    room = room_id()
+    rows = PayRepo.recent(room, days=days, limit=limit) if room else []
+    return {
+        "room_id": room,
+        "days": days,
+        "rows": [
+            {
+                "dt": row.dt,
+                "pay_type": coerce_str(row.pay_type),
+                "fee_type": coerce_str(row.fee_type),
+                "money": coerce_float(row.money),
+            }
+            for row in rows
+        ],
+    }
+
+
+def daily_usage(days: int = DAILY_DAYS) -> dict[str, Any]:
+    """每日用电曲线（E6）—— ``{"room_id", "days", "rows": [{"dt", "used"}]}``。
+
+    计算在 :func:`starwatt.domain.metrics.daily_usage_series`（纯函数，
+    与「日均用量」用同一套 delta 规则），这里只做取数与字段命名。
+    """
+    room = room_id()
+    raw = [row.as_dict() for row in DailyElecRepo.recent(room, days=days)] if room else []
+    series = metrics.daily_usage_series(raw)
+    return {
+        "room_id": room,
+        "days": days,
+        "rows": [{"dt": dt, "used": round(used, 2)} for dt, used in series],
+    }
+
+
+def refresh() -> dict[str, Any]:
+    """手动刷新（E13）—— 触发一轮抓取，**不推送飞书**。
+
+    为什么不能直接 ``run_once()``：那会把「用户点了一下按钮」变成一条
+    群告警（L1 低电 / 违规 / stale 都会被触发）。手动刷新只该更新数据。
+
+    Returns:
+        ``{"ok", "room_id", "records", "error"}`` —— 失败也返回 200 的 payload
+        （数据源故障不是 HTTP 错误，前端只需展示原因）。
+    """
+    from starwatt.scraper import service as scraper
+
+    try:
+        report = scraper.run_once(notify=False)
+    except Exception as exc:  # noqa: BLE001 —— 无法开始（未配 openid 等）
+        logger.warning("手动刷新失败：%s", exc)
+        return {"ok": False, "room_id": "", "records": 0, "error": str(exc)}
+
+    return {
+        "ok": report.ok,
+        "room_id": report.room_id or "",
+        # 本次抓取写入的行数合计（``rows`` 是 {端点: 行数}）
+        "records": sum(report.rows.values()),
+        "error": None if report.ok else "本次抓取未拿到核心数据（详见服务端日志）",
+    }
 
 
 def site() -> dict[str, Any]:

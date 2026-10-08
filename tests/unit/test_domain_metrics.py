@@ -145,3 +145,71 @@ class TestSumRecharges:
 
     def test_empty(self) -> None:
         assert metrics.sum_recharges([]) == 0.0
+
+
+# ===========================================================================
+# daily_usage_series（E6 每日用电曲线）
+# ===========================================================================
+class TestDailyUsageSeries:
+    """曲线与「日均用量」必须同源 —— 否则图上与卡上的数字会互相打架。"""
+
+    def test_basic_series(self) -> None:
+        rows = [
+            _row("2026-10-04", 10.0),
+            _row("2026-10-05", 12.5),
+            _row("2026-10-06", 15.0),
+        ]
+        assert metrics.daily_usage_series(rows) == [
+            ("2026-10-05", 2.5),
+            ("2026-10-06", 2.5),
+        ]
+
+    def test_first_row_produces_no_point(self) -> None:
+        """首行只能当基准 —— 没有它就没有「前一天」可比。"""
+        assert metrics.daily_usage_series([_row("2026-10-04", 10.0)]) == []
+
+    def test_negative_delta_is_skipped_and_keeps_baseline(self) -> None:
+        """换表 / 充值重置：该点跳过，且**不更新基准**（下一段重新起算）。"""
+        rows = [
+            _row("2026-10-04", 100.0),
+            _row("2026-10-05", 2.0),  # 重置（负 delta）→ 跳过，基准变 2.0
+            _row("2026-10-06", 3.0),  # 2.0 → 3.0 = 1.0 ✓
+        ]
+        assert metrics.daily_usage_series(rows) == [("2026-10-06", 1.0)]
+
+    def test_absurd_delta_is_clamped_out(self) -> None:
+        """超过单日上限（上游补录）的点不该进图 —— 会把纵轴拉到没法看。"""
+        rows = [_row("2026-10-04", 0.0), _row("2026-10-05", 999.0)]
+        assert metrics.daily_usage_series(rows) == []
+
+    def test_matches_avg_daily_rule(self) -> None:
+        """两条规则必须一致：曲线点的平均 == 日均。"""
+        rows = [
+            _row("2026-10-01", 0.0),
+            _row("2026-10-02", 4.0),
+            _row("2026-10-03", 1.0),  # 负 delta → 跳过（基准仍 4.0）
+            _row("2026-10-04", 8.0),
+        ]
+        series = metrics.daily_usage_series(rows)
+        avg = metrics.avg_daily_from_cumulative(rows)
+        assert avg is not None
+        assert sum(used for _, used in series) / len(series) == pytest.approx(avg)
+
+    def test_unusable_rows_are_ignored(self) -> None:
+        rows = [
+            {"total_eq": 5.0},  # 无 dt
+            _row("2026-10-05", None),  # 无累积值
+            _row("2026-10-06", 10.0),
+        ]
+        assert metrics.daily_usage_series(rows) == []
+
+    def test_input_order_does_not_matter(self) -> None:
+        """输入乱序也要出正确序列（DB 排序变了不该影响图）。"""
+        rows = [_row("2026-10-06", 15.0), _row("2026-10-04", 10.0), _row("2026-10-05", 12.5)]
+        assert metrics.daily_usage_series(rows) == [
+            ("2026-10-05", 2.5),
+            ("2026-10-06", 2.5),
+        ]
+
+    def test_empty(self) -> None:
+        assert metrics.daily_usage_series([]) == []

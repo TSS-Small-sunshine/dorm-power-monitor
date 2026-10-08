@@ -355,6 +355,36 @@ class TestNotifyWiring:
         )
         assert calls == []
 
+    def test_notify_false_keeps_data_but_skips_push(
+        self, tmp_db, frozen_now, monkeypatch
+    ) -> None:
+        """E13 手动刷新：**落库但不推送**。
+
+        为什么这条重要：用户在页面上点一下「刷新」，不该让群里收到一条
+        L1 低电 / 违规告警 —— 那是自动巡检的职责，不是手动操作。
+        但也**不能**退化成 ``fetch_only``（那个连库都不写），否则刷新完
+        页面还是旧数据，用户会以为按钮坏了。
+        """
+        _configure()
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            svc,
+            "_notify_hooks",
+            lambda: {"stale": lambda *a: calls.append(a)},
+        )
+
+        report = svc.run_once(
+            client=FakeClient(),
+            endpoints=[FakeEndpoint("F1")],
+            notify=False,
+            now=NOW,
+        )
+
+        assert calls == []  # 没推送
+        assert report.ok is True
+        assert get_str("last_scrape_status") == svc.STATUS_OK  # 但状态写了
+        assert get_str("last_room_id") == "room-1"  # 房间号也发布了
+
     def test_hook_exception_never_breaks_the_scrape(
         self, tmp_db, frozen_now, monkeypatch
     ) -> None:

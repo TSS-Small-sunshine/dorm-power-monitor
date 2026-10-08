@@ -484,6 +484,7 @@ def _finish(
 def run_once(
     *,
     fetch_only: bool = False,
+    notify: bool = True,
     client=None,
     endpoints=None,
     now=None,
@@ -493,6 +494,8 @@ def run_once(
     Args:
         fetch_only: 只抓取、**不落库也不写状态**（RK3 的冒烟模式：
             用来验证「能连上学校接口」而不产生任何副作用）。
+        notify: ``False`` = 落库但**不推送飞书**（E13 手动刷新：
+            用户在页面上点「刷新」不该给群里发一条告警）。
         client: 注入的 HTTP 客户端（测试用；为 ``None`` 时按注册表构造）。
         endpoints: 注入的端点列表（测试用；为 ``None`` 时用
             :data:`starwatt.scraper.endpoints.ENDPOINTS`）。
@@ -543,7 +546,8 @@ def run_once(
         _begin_status(moment, fetch_only=fetch_only)
 
         # M3：stale 检查在任何抓取工作**之前**（legacy 顺序）
-        hooks = {} if fetch_only else _notify_hooks()
+        # 手动刷新（notify=False）与冒烟（fetch_only）都不挂推送钩子
+        hooks = {} if (fetch_only or not notify) else _notify_hooks()
         _safe_push(hooks.get("stale"))
 
         _scrape_all(
