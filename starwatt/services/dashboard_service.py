@@ -35,7 +35,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from starwatt import timeutil
+from starwatt import timeutil, version_string
 from starwatt.config_registry import get_int, get_str, raw
 from starwatt.db.coerce import coerce_float, coerce_str
 from starwatt.db.repositories import (
@@ -48,10 +48,13 @@ from starwatt.domain import metrics, pricing, thresholds
 logger = logging.getLogger("starwatt.web")
 
 __all__ = [
+    "DEFAULT_SITE_NAME",
+    "DEFAULT_THEME_COLOR",
     "HOURLY_GAP_SEC",
     "history",
     "live",
     "monthly_projection",
+    "site",
     "stats",
 ]
 
@@ -344,3 +347,34 @@ def cleanup_before(days: int) -> int:
     if removed:
         logger.info("数据保留：清理 %d 条 %s 之前的记录", removed, cutoff)
     return removed
+
+
+#: 品牌兜底值（注册表读不到时用 —— 见 :func:`site`）
+DEFAULT_SITE_NAME = "StarWatt 星瓦"
+DEFAULT_THEME_COLOR = "#1677ff"
+
+
+def site() -> dict[str, Any]:
+    """品牌信息（M5 §5.2）—— ``site_name`` / ``theme_color`` / ``app_version``。
+
+    ⚠️ **只放非敏感的品牌字段**：这是唯一一个不需要登录的 ``/api/*`` 端点
+    （登录页要用它渲染站点名与主题色）。往这里加「数据」字段会把品牌端点
+    变成未认证的数据出口 —— 数据一律走 ``read_access`` 的
+    ``/api/data`` / ``/api/live``。
+
+    ⚠️ **不依赖数据库**：``db.init()`` 之前 ``meta`` 表还不存在，此时读配置
+    会抛 ``OperationalError``。品牌信息在那种情况下必须回落到默认值 ——
+    首屏白屏比「站点名是默认值」糟糕得多（``/healthz`` 也是同一原则）。
+    """
+    try:
+        site_name = get_str("site_name", DEFAULT_SITE_NAME)
+        theme_color = get_str("theme_color", DEFAULT_THEME_COLOR)
+    except Exception:  # noqa: BLE001 —— meta 表还没建（首次启动 / 探活场景）
+        logger.debug("品牌配置读取失败（meta 表未就绪）—— 回落默认值")
+        site_name, theme_color = DEFAULT_SITE_NAME, DEFAULT_THEME_COLOR
+
+    return {
+        "site_name": site_name,
+        "theme_color": theme_color,
+        "app_version": version_string(),
+    }

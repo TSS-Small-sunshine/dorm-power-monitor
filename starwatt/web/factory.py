@@ -12,6 +12,8 @@
 * 机器人回调（``/qq/events`` / ``/feishu/event``）是**第七个蓝图**
   :mod:`starwatt.web.blueprints.feishu` —— 它们是「平台推给我们」，认证靠
   平台签名，与用户登录态无关。
+* 前端 SPA 由 :func:`register_spa_fallback` 兜底（M5）：非 API 的 GET 回
+  ``static/index.html``，``/api/*`` 的未知路径仍然是 JSON 404。
 
 ``/healthz`` 为什么必须存在
 ==========================
@@ -24,7 +26,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, abort, jsonify, send_from_directory
 
 from starwatt.config import get_settings
 from starwatt.web.blueprints import ALL_BLUEPRINTS
@@ -32,8 +34,10 @@ from starwatt.web.blueprints.health import APP_VERSION
 
 __all__ = [
     "APP_VERSION",
+    "RESERVED_PREFIXES",
     "create_app",
     "register_blueprints",
+    "register_spa_fallback",
     "register_startup_tasks",
 ]
 
@@ -48,6 +52,59 @@ def _static_dir() -> str | None:
     """
     candidate = Path(get_settings().project_root) / "static"
     return str(candidate) if candidate.is_dir() else None
+
+
+#: 这些前缀下的未知路径**必须**回 JSON 404，不能落到 SPA 兜底上
+#: （否则前端会拿到一份 HTML，`JSON.parse` 报「服务端返回了非 JSON 响应」）
+RESERVED_PREFIXES: tuple[str, ...] = (
+    "api/",
+    "static/",
+    "feishu/",
+    "qq/",
+    "healthz",
+)
+
+
+def register_spa_fallback(app: Flask) -> bool:
+    """把**非 API** 的 GET 交给前端 SPA（M5 §5.9）。
+
+    为什么需要它：前端是客户端路由（`/login`、`/admin/config` 都是前端页面），
+    用户直接刷新或收藏这些地址时，请求会打到后端 —— 后端必须回
+    ``index.html`` 让前端自己路由，否则用户看到的是 JSON 404。
+
+    三条边界（都在测试里钉着）：
+
+    * 只在 **``static/index.html`` 存在**时注册 —— 没构建前端时行为与以前
+      完全一致（未知路径 = JSON 404），后端不依赖前端产物
+    * **``/api/*`` 等保留前缀**即使未注册也回 JSON 404（见 ``RESERVED_PREFIXES``）
+    * **只接管 GET/HEAD** —— ``POST /login`` 这类错法仍回 JSON 405
+
+    Returns:
+        是否注册成功（未构建前端时返回 ``False``）。
+    """
+    if not app.config.get("SPA_FALLBACK", True):
+        return False
+
+    static_dir = _static_dir()
+    if static_dir is None:
+        return False
+    index = Path(static_dir) / "index.html"
+    if not index.is_file():
+        return False
+
+    @app.get("/")
+    @app.get("/<path:path>")
+    def spa(path: str = ""):
+        """SPA 壳：把路由交给前端（真正的 404 由前端 ``/:pathMatch(.*)*`` 处理）。"""
+        if path.startswith(RESERVED_PREFIXES):
+            abort(404)  # → app.errorhandler(404) 的 JSON 响应
+        response = send_from_directory(static_dir, "index.html")
+        # 壳文件不缓存：升级后要立刻拿到新的 asset 清单（asset 名带 hash，本身可长缓存）
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    logger.debug("SPA 兜底已注册：%s", index)
+    return True
 
 
 def register_blueprints(app: Flask) -> None:
@@ -119,10 +176,11 @@ def create_app(config: dict | None = None) -> Flask:
         app.config.update(config)
 
     register_blueprints(app)
+    register_spa_fallback(app)
 
     @app.errorhandler(404)
     def _not_found(_error):
-        """JSON 404（SPA 路由由 M5 的静态兜底处理）。"""
+        """JSON 404（SPA 兜底未接管时走到这里，见 register_spa_fallback）。"""
         return jsonify({"ok": False, "error": "not_found"}), 404
 
     @app.errorhandler(405)
