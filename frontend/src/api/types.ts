@@ -90,3 +90,50 @@ export interface LoginPayload {
   token: string
   must_change_password: boolean
 }
+
+/** ``/api/violations`` —— E9（``power`` 单位是 **kW**） */
+export interface ViolationRow {
+  dt: string
+  reason: string
+  power: number | null
+}
+
+export interface ViolationPayload {
+  room_id: string
+  days: number
+  rows: ViolationRow[]
+}
+
+/** ``/api/payments`` —— E10 */
+export interface PaymentRow {
+  dt: string
+  pay_type: string | null
+  fee_type: string | null
+  money: number | null
+}
+
+export interface PaymentPayload {
+  room_id: string
+  days: number
+  rows: PaymentRow[]
+}
+
+/** ``/api/daily`` —— E6（``used`` 已由后端从累计表码推导） */
+export interface DailyRow {
+  dt: string
+  used: number
+}
+
+export interface DailyPayload {
+  room_id: string
+  days: number
+  rows: DailyRow[]
+}
+
+/** ``/api/refresh`` —— E13 */
+export interface RefreshPayload {
+  ok: boolean
+  room_id: string
+  records: number
+  error: string | null
+}
