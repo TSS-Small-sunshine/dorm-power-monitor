@@ -574,9 +574,12 @@ class TestBulkViews:
 # flags —— Q16 / L21
 # ===========================================================================
 class TestFlagRegistry:
-    def test_exactly_17_flags(self) -> None:
-        """设计文档 §2.9 定的是 17 个（2 总开关 + 8 告警层 + 7 命令）。"""
-        assert len(flags.FLAGS) == 17
+    def test_exactly_18_flags(self) -> None:
+        """设计文档 §2.9 定的是 17 个（2 总开关 + 8 告警层 + 7 命令）。
+
+        +1 = ``qq_bot_enabled``（Q18 扩展：新增 QQ 官方机器人渠道时加的总开关）。
+        """
+        assert len(flags.FLAGS) == 18
 
     def test_every_layer_maps_to_a_real_flag(self) -> None:
         """🔑 **L21 的核心修复**：不允许存在「没有开关的告警层」。"""
@@ -618,19 +621,21 @@ class TestFlagRegistry:
 
 
 class TestFlagSemantics:
-    def test_defaults_are_enabled_except_bot(self, tmp_db) -> None:
-        """所有开关默认开启，**唯独私聊机器人总开关默认关闭**。
+    def test_defaults_are_enabled_except_bots(self, tmp_db) -> None:
+        """所有开关默认开启，**唯独两个机器人总开关默认关闭**。
 
-        为什么它默认关：机器人需要 App ID / Secret / Token 才能工作，
-        新装用户还没填。默认开会让 ``/feishu/event`` 一直报「未配置」。
+        为什么默认关：机器人需要 App ID / Secret / Token 才能工作，
+        新装用户还没填。默认开会让回调端点一直报「未配置」。
 
-        它的 7 个命令开关也因此默认不生效 —— 这正是**总开关优先**的体现。
+        它们下面的 7 个命令开关也因此默认不生效 —— 这正是**总开关优先**的体现。
         """
         assert store.get_bool(flags.GROUP_MASTER) is True
         assert store.get_bool(flags.BOT_MASTER) is False
+        assert store.get_bool(flags.QQ_MASTER) is False
+        off_masters = {flags.BOT_MASTER, flags.QQ_MASTER}
         for key, flag in flags.FLAGS.items():
-            # 关闭的只有：机器人总开关自身 + 它下面的 7 个命令
-            off = key == flags.BOT_MASTER or flag.parent == flags.BOT_MASTER
+            # 关闭的只有：两个机器人总开关自身 + 机器人总开关下面的 7 个命令
+            off = key in off_masters or flag.parent in off_masters
             assert flags.is_enabled(key) is not off, key
 
     def test_bot_commands_work_once_master_is_on(self, tmp_db) -> None:
@@ -723,6 +728,9 @@ class TestQuietHours:
 
 class TestShouldPush:
     def test_allows_by_default(self, tmp_db) -> None:
+        # 关掉静默时段（start == end = 不静默）—— 否则本用例会随真实时钟
+        # 在 23:00–07:00 之间变红（CI 跑在哪个时区都该是绿的）
+        store.set_many({"quiet_hours_start": "00:00", "quiet_hours_end": "00:00"})
         assert flags.should_push("l1") is True
         assert flags.why_suppressed("l1") is None
 
@@ -738,7 +746,9 @@ class TestShouldPush:
 
     def test_quiet_hours_suppresses_only_l1_l2(self, tmp_db, monkeypatch) -> None:
         """🔑 静默时段只压 L1/L2；日报/周报是用户主动订阅的，照发。"""
-        monkeypatch.setattr(flags, "now_cst", lambda: _at(2, 0))
+        # 统一 patch 时间源（flags 走 ``timeutil.now_cst()`` 模块属性，
+        # 这样 conftest 的 frozen_now 与这里的 patch 都能生效）
+        monkeypatch.setattr("starwatt.timeutil.now_cst", lambda: _at(2, 0))
         assert flags.should_push("l1") is False
         assert flags.should_push("l2") is False
         assert flags.should_push("daily") is True
@@ -746,7 +756,7 @@ class TestShouldPush:
         assert flags.should_push("monthly") is True
 
     def test_quiet_hours_reason_mentions_range(self, tmp_db, monkeypatch) -> None:
-        monkeypatch.setattr(flags, "now_cst", lambda: _at(2, 0))
+        monkeypatch.setattr("starwatt.timeutil.now_cst", lambda: _at(2, 0))
         reason = flags.why_suppressed("l1") or ""
         assert "静默时段" in reason and "23:00" in reason
 
