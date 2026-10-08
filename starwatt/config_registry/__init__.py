@@ -42,8 +42,8 @@ from __future__ import annotations
 
 from starwatt.config_registry import registry, secrets
 from starwatt.config_registry.registry import (
-    GROUPS,
     GROUP_ORDER,
+    GROUPS,
     REGISTRY,
     REMOVED_KEYS,
     by_group,
