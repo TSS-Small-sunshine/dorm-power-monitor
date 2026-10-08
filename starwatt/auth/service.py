@@ -170,6 +170,22 @@ def change_password(user_id: int, new_password: str) -> None:
     session_mod.revoke_all_for_user(user_id)
 
 
+def reset_password(user_id: int, new_password: str, *, must_change: bool = True) -> None:
+    """**管理员重置**他人密码。
+
+    与 :func:`change_password`（本人改密）只差 ``must_change``：
+    临时密码由管理员口头/纸条转达，必须由用户自己再改一次才算「本人持有」
+    （Q19 的强制首登改密，见 :mod:`starwatt.auth.decorators` 的拦截）。
+    """
+    problem = pwd.validate_strength(new_password)
+    if problem:
+        raise ValueError(problem)
+    UserRepo.update_password(
+        user_id, pwd.hash_password(new_password), must_change=must_change
+    )
+    session_mod.revoke_all_for_user(user_id)
+
+
 def set_role(user_id: int, role: str) -> None:
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {VALID_ROLES!r}, got {role!r}")

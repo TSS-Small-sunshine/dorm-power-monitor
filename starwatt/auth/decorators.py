@@ -18,6 +18,19 @@
 
 错误响应统一为 ``{"ok": false, "error": "<code>"}``，
 ``401`` 未登录 / ``403`` 权限不足或 CSRF 失败。
+
+强制首登改密（Q19 / B4）
+======================
+
+``users.must_change_password = 1`` 的用户**能登录**，但除下面三条路径外
+**一律 403 ``must_change_password``**（见 :func:`require_auth`）：
+
+* ``POST /api/auth/password`` —— 唯一的出口，改完即解除
+* ``POST /api/auth/logout`` —— 允许反悔
+* ``GET  /api/auth/me`` —— 前端据此把用户引导到改密页
+
+为什么不能直接拒绝登录：拒绝登录 = 拿不到会话 = **永远改不了密码**，
+用户会被彻底锁在门外。所以正确做法是「放进来，但只许改密」。
 """
 from __future__ import annotations
 
@@ -35,6 +48,7 @@ logger = logging.getLogger("starwatt.auth.decorators")
 __all__ = [
     "AUTH_HEADER",
     "BEARER_PREFIX",
+    "MUST_CHANGE_ALLOWED_PATHS",
     "current_user",
     "extract_token",
     "login_required",
@@ -46,6 +60,15 @@ __all__ = [
 AUTH_HEADER = "Authorization"
 BEARER_PREFIX = "Bearer "
 TOKEN_HEADER = "X-Auth-Token"
+
+#: 强制改密状态下**仍然可用**的路径（多一条都是安全缺口，改动请三思）
+MUST_CHANGE_ALLOWED_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/auth/password",  # 改密本身 —— 唯一出口
+        "/api/auth/logout",  # 退出登录
+        "/api/auth/me",  # 前端读 must_change_password 标志用
+    }
+)
 
 
 def extract_token() -> str | None:
@@ -80,6 +103,15 @@ def _deny(code: str, status: int):
     return jsonify({"ok": False, "error": code}), status
 
 
+def _must_change_exempt() -> bool:
+    """当前请求是否属于「强制改密状态下仍放行」的那三条路径。
+
+    ``request.path`` 与常量表**精确比对**（不做前缀匹配）：``/api/auth/me``
+    若写成前缀匹配，``/api/auth/me/../../admin/config`` 这类路径就绕过了。
+    """
+    return request.path.rstrip("/") in MUST_CHANGE_ALLOWED_PATHS
+
+
 def require_auth(role: str | None = None, allow_anonymous_read: bool = False):
     """要求已登录；``role="admin"`` 时额外要求管理员。
 
@@ -101,6 +133,11 @@ def require_auth(role: str | None = None, allow_anonymous_read: bool = False):
 
             if role == ROLE_ADMIN and not g.current_user.is_admin:
                 return _deny("forbidden", 403)
+
+            if g.current_user.needs_password_change and not _must_change_exempt():
+                # Q19/B4：首登未改密 —— 放进来但只许改密（见模块 docstring）
+                logger.log(25, "强制改密拦截：%s 请求 %s", g.current_user.username, request.path)
+                return _deny("must_change_password", 403)
 
             return view(*args, **kwargs)
 
