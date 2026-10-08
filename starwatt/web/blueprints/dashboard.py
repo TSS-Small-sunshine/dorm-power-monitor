@@ -67,3 +67,21 @@ def api_data():
 def api_live():
     """最新值 + 电表快照 + 本月预计电费。"""
     return jsonify(dashboard_service.live())
+
+
+@bp.get("/api/site")
+def api_site():
+    """品牌信息（M5 §5.2）—— **公开**，无需登录。
+
+    为什么公开：登录页本身就要显示站点名与主题色（否则首屏只能写死一个
+    标题，用户改 `site_name` 后登录页不变）。这里**只**暴露三个字段，
+    且都不是秘密：
+
+    * ``site_name`` / ``theme_color`` —— 配置中心「站点」分组，本来就印在页面上
+    * ``app_version`` —— 排障用，``/healthz`` 也公开返回它
+
+    ⚠️ 不要往这里加任何「数据」字段（电量、房间、openid）—— 那会把一个
+    品牌端点变成未认证的数据出口。数据一律走 ``read_access`` 的
+    ``/api/data`` / ``/api/live``（Q11：默认需登录）。
+    """
+    return jsonify(dashboard_service.site())

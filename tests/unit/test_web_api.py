@@ -22,6 +22,7 @@ from starwatt.db.models import Record
 from starwatt.db.repositories import RecordRepo
 from starwatt.web.blueprints import ALL_BLUEPRINTS
 from starwatt.web.blueprints import dashboard as dashboard_bp
+from starwatt.web.factory import create_app
 
 FIXTURES = Path(__file__).resolve().parents[1] / "regression" / "fixtures"
 
@@ -115,8 +116,92 @@ class TestAccessControl:
         """探活端点不能要求认证（Docker / systemd 要能匿名探）。"""
         assert client.get("/healthz").status_code == 200
 
-    def test_unknown_path_returns_json_404(self, client) -> None:
+    def test_unknown_api_path_returns_json_404(self, client) -> None:
+        """``/api/*`` 的未知路径**永远**是 JSON —— 不能被 SPA 兜底吞掉。
+
+        否则前端拿到一份 HTML，`JSON.parse` 会报「服务端返回了非 JSON 响应」，
+        排查方向会被带偏（真正的错因是接口名写错）。
+        """
         response = client.get("/api/nope")
+        assert response.status_code == 404
+        assert response.get_json()["error"] == "not_found"
+
+
+# ===========================================================================
+# SPA 兜底（M5 §5.9）
+# ===========================================================================
+class TestSpaFallback:
+    """非 API 的 GET → ``static/index.html``；其余边界一律保持 JSON。
+
+    这些用例**不依赖真实构建产物**：``_static_dir`` 被指向一个临时目录，
+    所以 CI 上不构建前端也能跑（而且能验证「没构建时的行为」）。
+    """
+
+    @staticmethod
+    def _fake_build(tmp_path, monkeypatch, *, with_index: bool = True):
+        """造一个假的构建目录，并让工厂指向它。"""
+        from starwatt.web import factory
+
+        static = tmp_path / "static"
+        (static / "assets").mkdir(parents=True, exist_ok=True)
+        (static / "assets" / "index-abc123.js").write_text("console.log(1)", encoding="utf-8")
+        if with_index:
+            (static / "index.html").write_text(
+                '<!doctype html><html><body><div id="app"></div></body></html>',
+                encoding="utf-8",
+            )
+        monkeypatch.setattr(factory, "_static_dir", lambda: str(static))
+        return static
+
+    def test_spa_route_serves_index(self, tmp_path, monkeypatch, web_app) -> None:
+        self._fake_build(tmp_path, monkeypatch)
+        app = create_app()
+        client = app.test_client()
+
+        for path in ("/", "/login", "/admin/config"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+            assert b'id="app"' in response.data, path
+
+    def test_spa_shell_is_not_cached(self, tmp_path, monkeypatch, web_app) -> None:
+        """壳文件必须 no-cache：升级后要立刻拿到新的 asset 清单。"""
+        self._fake_build(tmp_path, monkeypatch)
+        response = create_app().test_client().get("/login")
+        assert response.headers["Cache-Control"] == "no-cache"
+
+    def test_reserved_prefixes_stay_json(self, tmp_path, monkeypatch, web_app) -> None:
+        self._fake_build(tmp_path, monkeypatch)
+        client = create_app().test_client()
+
+        for path in ("/api/nope", "/feishu/nope", "/qq/nope", "/healthz/nope"):
+            response = client.get(path)
+            assert response.status_code == 404, path
+            assert response.get_json()["error"] == "not_found", path
+
+    def test_post_is_not_taken_over(self, tmp_path, monkeypatch, web_app) -> None:
+        """只接管 GET/HEAD —— ``POST /login`` 仍回 JSON 405（接口用错了方法）。"""
+        self._fake_build(tmp_path, monkeypatch)
+        response = create_app().test_client().post("/login")
+        assert response.status_code == 405
+        assert response.get_json()["error"] == "method_not_allowed"
+
+    def test_assets_are_served_by_flask(self, tmp_path, monkeypatch, web_app) -> None:
+        """带 hash 的 asset 走 Flask 静态服务（nginx 直出是生产路径）。"""
+        self._fake_build(tmp_path, monkeypatch)
+        response = create_app().test_client().get("/static/assets/index-abc123.js")
+        assert response.status_code == 200
+
+    def test_no_build_keeps_json_404(self, tmp_path, monkeypatch, web_app) -> None:
+        """**没构建前端时行为与以前完全一致** —— 后端不依赖前端产物。"""
+        self._fake_build(tmp_path, monkeypatch, with_index=False)
+        response = create_app().test_client().get("/login")
+        assert response.status_code == 404
+        assert response.get_json()["error"] == "not_found"
+
+    def test_can_be_disabled_by_config(self, tmp_path, monkeypatch, web_app) -> None:
+        """``SPA_FALLBACK=False`` 显式关掉兜底（排障 / 只想用 API 时）。"""
+        self._fake_build(tmp_path, monkeypatch)
+        response = create_app({"SPA_FALLBACK": False}).test_client().get("/login")
         assert response.status_code == 404
         assert response.get_json()["error"] == "not_found"
 
@@ -205,3 +290,56 @@ class TestInternalToken:
         assert internal_token_ok("s3cr3t-token") is True
         assert internal_token_ok("wrong") is False
         assert internal_token_ok(None) is False
+
+
+# ===========================================================================
+# /api/site —— 品牌信息（M5 §5.2）
+# ===========================================================================
+class TestSiteEndpoint:
+    """**唯一**一个不需要登录的 ``/api/*`` 端点。
+
+    它只回答「这个站点叫什么、主题色是什么、后端什么版本」—— 登录页也要用，
+    所以不能要求会话；但正因为它公开，**必须钉住它只有这三个字段**。
+    """
+
+    def test_anonymous_can_read_branding(self, web_app) -> None:
+        response = web_app.test_client().get("/api/site")
+        assert response.status_code == 200
+        assert set(response.get_json()) == {"site_name", "theme_color", "app_version"}
+
+    def test_reflects_configured_values(self, web_app, tmp_db) -> None:
+        set_many({"site_name": "三号楼 502", "theme_color": "#22c55e"})
+        payload = web_app.test_client().get("/api/site").get_json()
+        assert payload["site_name"] == "三号楼 502"
+        assert payload["theme_color"] == "#22c55e"
+
+    def test_leaks_no_data_fields(self, web_app, tmp_db) -> None:
+        """公开端点不能变成数据出口（电量 / 房间 / openid 都不许出现）。"""
+        RecordRepo.insert(Record(ts="2026-10-06 11:00:00", read_time=None, remain=7.5))
+        set_state("last_room_id", "room-secret")
+
+        body = web_app.test_client().get("/api/site").get_data(as_text=True)
+        for forbidden in ("remain", "room", "openid", "rows", "stats"):
+            assert forbidden not in body, forbidden
+
+    def test_survives_missing_meta_table(self, web_app) -> None:
+        """``db.init()`` 之前也不能 500 —— 首屏白屏比默认站点名糟得多。"""
+        import sqlite3
+
+        from starwatt.config import get_settings
+
+        conn = sqlite3.connect(get_settings().db_path)
+        conn.execute("DROP TABLE IF EXISTS meta")
+        conn.commit()
+        conn.close()
+
+        response = web_app.test_client().get("/api/site")
+        assert response.status_code == 200
+        assert response.get_json()["site_name"]  # 回落默认值，不是空串
+
+    def test_data_endpoints_are_still_protected(self, web_app) -> None:
+        """对照：公开的只有品牌端点，数据端点仍按 Q11 默认要求登录。"""
+        client = web_app.test_client()
+        assert client.get("/api/site").status_code == 200
+        for path in ("/api/data", "/api/live"):
+            assert client.get(path).status_code == 401, path
