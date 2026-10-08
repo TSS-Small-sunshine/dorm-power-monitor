@@ -21,15 +21,18 @@
 铁律：**关闭 ≠ 报错**
 =====================
 
-=========================  ==============================================
+===============  ==============================================
 场景                       关闭后的行为
-=========================  ==============================================
-群推送总开关关闭            ``post_card()`` 直接返回，记 ``NOTICE``
+===============  ==============================================
+群推送总开关关闭            ``post_card()`` 静默返回 ``False``，记 ``NOTICE``
+                           （出口兜底）；告警路径更早一步就被
+                           ``should_push()`` 拦下
 机器人总开关关闭            ``/feishu/event`` 返回 200 但不处理
                            （**飞书侧不会报错重试**）
+QQ 机器人总开关关闭         ``/qq/events`` 返回 200 ``{"code": 0}`` 但不处理
 某告警层关闭                该层 ``should_push()`` 返回 False，记 ``NOTICE``
-某命令关闭                  回复「该命令已禁用」，记 ``NOTICE``
-=========================  ==============================================
+某命令关闭                  ``commands`` 回「该命令已禁用」，记 ``NOTICE``
+===============  ==============================================
 
 「静默降级」的工程含义：**调用方不需要写 try/except，也不需要判断
 「为什么没发出去」** —— 它只问 :func:`should_push`，拿到 ``False`` 就
@@ -41,8 +44,8 @@ import logging
 from dataclasses import dataclass
 from datetime import time
 
+from starwatt import timeutil
 from starwatt.config_registry import get_bool, get_str
-from starwatt.timeutil import now_cst
 
 logger = logging.getLogger("starwatt.notify")
 
@@ -58,6 +61,7 @@ __all__ = [
     "in_quiet_hours",
     "is_enabled",
     "layer_enabled",
+    "own_value",
     "should_push",
     "why_suppressed",
 ]
@@ -65,6 +69,9 @@ __all__ = [
 #: 总开关的 key
 GROUP_MASTER = "push_group_enabled"
 BOT_MASTER = "push_bot_enabled"
+
+#: QQ 官方机器人总开关（独立渠道，不隶属飞书群/私聊开关）
+QQ_MASTER = "qq_bot_enabled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +91,7 @@ _ALL_FLAGS: tuple[Flag, ...] = (
     # -- 总开关 ----------------------------------------------------------
     _flag(GROUP_MASTER, "群推送总开关"),
     _flag(BOT_MASTER, "私聊机器人总开关"),
+    _flag(QQ_MASTER, "QQ 机器人总开关"),
     # -- 告警层（群推送）--------------------------------------------------
     _flag("push_l1_enable", "L1 低电告警", GROUP_MASTER),
     _flag("push_l2_enable", "L2 常规摘要卡", GROUP_MASTER),
@@ -159,6 +167,20 @@ def is_enabled(key: str) -> bool:
     return get_bool(flag.key)
 
 
+def own_value(key: str) -> bool:
+    """本开关**自身的值**（不看总开关）。
+
+    只给「已经自己判过总开关」的调用方用，典型是
+    :mod:`starwatt.notify.commands`：渠道层（``dispatcher.handle_event`` /
+    ``qq.handle_event``）先按 ``BOT_MASTER`` / ``QQ_MASTER`` 决定整条渠道
+    是否静默，命令层再按各自的 ``cmd_*_enabled`` 决定**这一条命令**是否可用。
+
+    两处都用 :func:`is_enabled` 会出问题：机器人总开关默认**关闭**，那样连
+    「命令层单独渲染文本」都会被连带否决，而且渠道层的总开关语义会被判两遍。
+    """
+    return get_bool(_lookup(key).key)
+
+
 def enabled_flags() -> list[str]:
     """当前处于「开启」状态的开关 key 列表（UI 展示用）。"""
     return [key for key in FLAGS if is_enabled(key)]
@@ -210,7 +232,7 @@ def in_quiet_hours(moment=None) -> bool:
     if start == end:
         return False
 
-    current = (moment or now_cst()).time()
+    current = (moment or timeutil.now_cst()).time()
     if start < end:
         return start <= current < end
     # 跨午夜

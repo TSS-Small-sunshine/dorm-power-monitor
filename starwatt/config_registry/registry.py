@@ -58,6 +58,7 @@ SCRAPE = "数据采集"
 THRESHOLD = "告警阈值"
 PUSH = "推送（群）"
 BOT = "机器人（私聊）"
+QQ = "机器人（QQ）"
 AUTH = "认证"
 LOG = "日志"
 ADVANCED = "高级"
@@ -68,6 +69,7 @@ GROUP_ORDER: tuple[str, ...] = (
     THRESHOLD,
     PUSH,
     BOT,
+    QQ,
     AUTH,
     LOG,
     ADVANCED,
@@ -79,6 +81,7 @@ GROUPS: dict[str, str] = {
     THRESHOLD: "触发告警的电量阈值",
     PUSH: "飞书群机器人群推送",
     BOT: "飞书私聊机器人（事件订阅）",
+    QQ: "QQ 官方机器人（事件订阅）",
     AUTH: "登录与会话策略",
     LOG: "运行日志",
     ADVANCED: "高级（改动需谨慎）",
@@ -158,6 +161,12 @@ _SCRAPE_SETTINGS: tuple[Setting, ...] = (
         "dorm_base_url", "学校接口地址", SCRAPE, T.URL,
         "https://xydf.xxx.edu.cn",
         help="宿舍电量系统的根地址", validate="url",
+    ),
+    cfg(
+        "allow_private_hosts", "允许访问内网地址", SCRAPE, T.BOOL, False,
+        help="🔒 默认关闭。仅当自建学校代理跑在局域网时开启 —— "
+             "会跳过 SSRF 防护的 L2/L3 检查（见 starwatt/scraper/ssrf.py）",
+        advanced=True,
     ),
     cfg(
         "dorm_openid", "登录凭据 openid", SCRAPE, T.SECRET, "",
@@ -493,6 +502,47 @@ _ADVANCED_SETTINGS: tuple[Setting, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# QQ 官方机器人（Q18 扩展：新渠道的凭据项）
+# ---------------------------------------------------------------------------
+# 见 starwatt/notify/qq.py 与 docs（QQ 开放平台 → 开发设置）：
+#   AppID / AppSecret  取 access_token 用
+#   Bot Secret         回调签名（Ed25519）用 —— 不是 AppSecret，别填错
+_QQ_SETTINGS: tuple[Setting, ...] = (
+    cfg(
+        "qq_bot_enabled", "QQ 机器人总开关", QQ, T.BOOL, False,
+        help="关闭后 QQ 侧事件静默忽略、告警也不推 QQ（记 NOTICE，不报错）",
+    ),
+    cfg(
+        "qq_app_id", "AppID", QQ, T.STR, "",
+        help="QQ 开放平台 → 开发设置 → 机器人 ID",
+    ),
+    cfg(
+        "qq_app_secret", "AppSecret", QQ, T.SECRET, "",
+        help="🔒 加密存储。用于获取 access_token",
+    ),
+    cfg(
+        "qq_bot_secret", "Bot Secret", QQ, T.SECRET, "",
+        help="🔒 加密存储。用于校验回调签名（Ed25519）—— 与 AppSecret 不同",
+    ),
+    cfg(
+        "qq_target_kind", "主动推送目标类型", QQ, T.STR, "group",
+        help="group = 群聊；c2c = 单聊",
+        validate="enum:group|c2c", advanced=True,
+    ),
+    cfg(
+        "qq_target_openid", "主动推送目标 OpenID", QQ, T.STR, "",
+        help="留空则用「最近一次跟机器人说话的会话」（机器人不能凭空私聊）",
+        validate="len:0..128", advanced=True,
+    ),
+    cfg(
+        "qq_api_base", "OpenAPI 地址", QQ, T.STR, "https://api.bot.qq.com",
+        help="沙箱或私有化部署时改这里", validate="url", advanced=True,
+    ),
+    state("last_qq_target", "最近的 QQ 会话", QQ, T.STR, "", advanced=True),
+)
+
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 _ALL: tuple[Setting, ...] = (
@@ -501,6 +551,7 @@ _ALL: tuple[Setting, ...] = (
     + _THRESHOLD_SETTINGS
     + _PUSH_SETTINGS
     + _BOT_SETTINGS
+    + _QQ_SETTINGS
     + _AUTH_SETTINGS
     + _LOG_SETTINGS
     + _ADVANCED_SETTINGS
