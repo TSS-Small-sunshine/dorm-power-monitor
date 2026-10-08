@@ -34,7 +34,7 @@ import logging
 
 from flask import request
 
-from starwatt.auth.decorators import require_admin, require_auth
+from starwatt.auth.decorators import require_admin, require_auth, require_csrf
 from starwatt.config_registry import get_bool, get_str
 
 logger = logging.getLogger("starwatt.web")
@@ -44,6 +44,7 @@ __all__ = [
     "admin_access",
     "internal_token_ok",
     "read_access",
+    "refresh_access",
 ]
 
 #: 内部调用方（调度器 / 脚本）携带 token 的头
@@ -65,6 +66,38 @@ def read_access(view):
 def admin_access(view):
     """管理接口守卫：仅管理员。"""
     return require_admin(view)
+
+
+def refresh_access(view):
+    """``POST /api/refresh`` 守卫（G7 + Q11）—— 两条互斥的合法路径。
+
+    ::
+
+        浏览器（管理员会话 + CSRF）    → 页面上的「刷新」按钮
+        脚本 / 调度器（X-Internal-Token）→ 自动化调用
+
+    SCOPE_DECISION G7 把这条从「token 为空则跳过校验」改成**默认开启**：
+    它会真的去访问学校接口并写库，是写操作，不能匿名触发。
+    内部 token **未配置时一律拒绝**（``internal_token_ok`` 是 fail-closed），
+    所以「脚本路径」只有显式配了 ``api_internal_token`` 才可用。
+
+    ⚠️ CSRF 只保护**会话路径**（内层 ``require_csrf``）。原因：CSRF 防的是
+    「浏览器带着用户的 Cookie 替用户发请求」；而内部 token 是请求头里的显式
+    凭据，浏览器不会自动携带，也就没有可被冒用的环境凭据 —— 给脚本强加 CSRF
+    只会让「用 curl 触发一次抓取」变成不可能。
+
+    ⚠️ 因此蓝图里**不要**再叠一个 ``@require_csrf``（那样脚本路径会被它拦下）。
+    """
+
+    guarded = require_admin(require_csrf(view))
+
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if internal_token_ok():
+            return view(*args, **kwargs)
+        return guarded(*args, **kwargs)
+
+    return wrapper
 
 
 def internal_token_ok(token: str | None = None) -> bool:

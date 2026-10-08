@@ -41,6 +41,7 @@ from typing import Any
 __all__ = [
     "MAX_DAILY_KWH",
     "avg_daily_from_cumulative",
+    "daily_usage_series",
     "days_remaining",
     "sort_usable",
     "span_delta",
@@ -111,6 +112,38 @@ def avg_daily_from_cumulative(
     if not deltas:
         return None
     return sum(deltas) / len(deltas)
+
+
+def daily_usage_series(
+    rows: list[dict[str, Any]], max_daily_kwh: float = MAX_DAILY_KWH
+) -> list[tuple[str, float]]:
+    """累积表码序列 → **每日用量**序列（``[(dt, 度数), ...]``，供趋势图用）。
+
+    与 :func:`avg_daily_from_cumulative` 用**同一套 delta 规则**，否则会出现
+    「图上某天 8 度、但日均显示 6 度」这种自相矛盾（用户一定会发现）：
+
+    * ``delta < 0`` —— 换表 / 充值重置：**跳过该点**，且不更新 ``prev``
+      （下一段从新的基准重新开始算）
+    * ``delta > max_daily_kwh`` —— 上游事件（补录、跨月重置）：跳过
+    * 首行没有前一行 → 不产生点（它只能作为下一行的基准）
+
+    Returns:
+        升序的 ``(日期, 用量)``；有效点少于 1 个时返回空列表。
+    """
+    cleaned = sort_usable(rows)
+
+    series: list[tuple[str, float]] = []
+    prev: float | None = None
+    for row in cleaned:
+        current = cumulative_of(row)
+        if prev is not None and current is not None:
+            delta = current - prev
+            if delta < 0:
+                pass  # 重置：跳过，且不更新 prev（与 avg_daily 一致）
+            elif delta <= max_daily_kwh:
+                series.append((str(row["dt"]), delta))
+        prev = current
+    return series
 
 
 def step_delta(rows: list[dict[str, Any]], back: int = 1) -> float:

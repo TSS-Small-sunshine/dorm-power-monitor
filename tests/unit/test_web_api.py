@@ -19,10 +19,12 @@ import pytest
 
 from starwatt.config_registry import set_many, set_state
 from starwatt.db.models import Record
-from starwatt.db.repositories import RecordRepo
+from starwatt.db.repositories import DailyElecRepo, PayRepo, RecordRepo, ViolationRepo
 from starwatt.web.blueprints import ALL_BLUEPRINTS
 from starwatt.web.blueprints import dashboard as dashboard_bp
 from starwatt.web.factory import create_app
+
+GOOD_PASSWORD = "Str0ng-Pass!"
 
 FIXTURES = Path(__file__).resolve().parents[1] / "regression" / "fixtures"
 
@@ -204,6 +206,165 @@ class TestSpaFallback:
         response = create_app({"SPA_FALLBACK": False}).test_client().get("/login")
         assert response.status_code == 404
         assert response.get_json()["error"] == "not_found"
+
+
+# ===========================================================================
+# Dashboard 4 段的数据端点（E6 / E9 / E10）
+# ===========================================================================
+class TestDashboardSections:
+    """违规 / 缴费 / 每日曲线 —— 字段名即前端契约，改名字会静默丢功能。"""
+
+    @pytest.fixture
+    def client(self, web_app):
+        set_many({"public_readonly": True})
+        return web_app.test_client()
+
+    def test_violations_payload(self, client, tmp_db) -> None:
+        set_state("last_room_id", "room-1")
+        ViolationRepo.upsert_many(
+            "room-1",
+            [
+                {
+                    "roomId": "room-1",
+                    "dt": "2026-10-06 11:00:00",
+                    "wg_reason": "大功率",
+                    "wg_power": 1.2,
+                },
+                {
+                    "roomId": "room-1",
+                    "dt": "2026-10-05 11:00:00",
+                    "wg_reason": "大功率",
+                    "wg_power": 0.8,
+                },
+            ],
+        )
+        payload = client.get("/api/violations").get_json()
+        assert payload["room_id"] == "room-1" and payload["days"] == 30
+        assert set(payload["rows"][0]) == {"dt", "reason", "power"}
+        assert {row["power"] for row in payload["rows"]} == {1.2, 0.8}
+
+    def test_violations_without_room_is_empty(self, client, tmp_db) -> None:
+        """没抓过（没有 roomId）→ 空列表，**不报错**（首装就能打开页面）。"""
+        payload = client.get("/api/violations").get_json()
+        assert payload["room_id"] == "" and payload["rows"] == []
+
+    def test_payments_payload(self, client, tmp_db) -> None:
+        set_state("last_room_id", "room-1")
+        PayRepo.upsert_many(
+            "room-1",
+            [
+                {
+                    "dt": "2026-10-01 09:00:00",
+                    "pay_type": "微信",
+                    "fee_type": "电费",
+                    "money": 50.0,
+                }
+            ],
+        )
+        payload = client.get("/api/payments").get_json()
+        assert set(payload["rows"][0]) == {"dt", "pay_type", "fee_type", "money"}
+        assert payload["rows"][0]["money"] == 50.0
+
+    def test_daily_usage_is_derived_from_cumulative(self, client, tmp_db) -> None:
+        set_state("last_room_id", "room-1")
+        DailyElecRepo.upsert_many(
+            "room-1",
+            [
+                {"roomId": "room-1", "dt": "2026-10-04", "total_eq": 10.0},
+                {"roomId": "room-1", "dt": "2026-10-05", "total_eq": 12.5},
+                {"roomId": "room-1", "dt": "2026-10-06", "total_eq": 15.0},
+            ],
+        )
+        payload = client.get("/api/daily").get_json()
+        assert payload["rows"] == [
+            {"dt": "2026-10-05", "used": 2.5},
+            {"dt": "2026-10-06", "used": 2.5},
+        ]
+
+    @pytest.mark.parametrize("query", ["?days=abc", "?days=0", "?days=99999999"])
+    def test_bad_days_falls_back_to_default(self, client, tmp_db, query) -> None:
+        """参数容错：非法/越界一律回落默认值（前端不用为参数错误写错误处理）。"""
+        assert client.get(f"/api/violations{query}").get_json()["days"] == 30
+
+    def test_anonymous_is_rejected(self, web_app) -> None:
+        """三个读端点默认要求登录（Q11）—— 只有 /api/site 是公开的。"""
+        client = web_app.test_client()
+        for path in ("/api/violations", "/api/payments", "/api/daily"):
+            assert client.get(path).status_code == 401, path
+
+
+# ===========================================================================
+# POST /api/refresh —— 手动刷新（E13 / G7）
+# ===========================================================================
+class TestRefreshEndpoint:
+    """写操作：管理员会话 + CSRF，或内部 token（脚本）。匿名一律不行。"""
+
+    @staticmethod
+    def _stub(monkeypatch, **payload):
+        from starwatt.services import dashboard_service
+
+        calls: list[bool] = []
+
+        def _fake():
+            calls.append(True)
+            return {"ok": True, "room_id": "r", "records": 1, "error": None, **payload}
+
+        monkeypatch.setattr(dashboard_service, "refresh", _fake)
+        return calls
+
+    def test_anonymous_is_rejected(self, web_app) -> None:
+        assert web_app.test_client().post("/api/refresh").status_code == 401
+
+    def test_viewer_is_forbidden(self, viewer_client) -> None:
+        """只读用户不能触发外部抓取。"""
+        assert viewer_client.post("/api/refresh").status_code == 403
+
+    def test_admin_with_csrf_can_refresh(self, admin_client, monkeypatch) -> None:
+        calls = self._stub(monkeypatch)
+        response = admin_client.post("/api/refresh")
+        assert response.status_code == 200
+        assert response.get_json()["ok"] is True
+        assert calls == [True]
+
+    def test_admin_without_csrf_is_rejected(self, web_app) -> None:
+        from starwatt.auth import service as auth
+        from starwatt.auth.constants import ROLE_ADMIN
+
+        auth.create_user("admin", GOOD_PASSWORD, role=ROLE_ADMIN)
+        client = web_app.test_client()
+        client.post("/api/auth/login", json={"username": "admin", "password": GOOD_PASSWORD})
+        assert client.post("/api/refresh").status_code == 403  # 没有 X-CSRF-Token
+
+    def test_internal_token_works_without_session(self, web_app, tmp_db, monkeypatch) -> None:
+        """脚本路径：``X-Internal-Token`` 不需要会话，也不需要 CSRF。"""
+        from starwatt.web.security import INTERNAL_TOKEN_HEADER
+
+        set_many({"api_internal_token": "s3cr3t-token"})
+        self._stub(monkeypatch, records=2)
+        response = web_app.test_client().post(
+            "/api/refresh", headers={INTERNAL_TOKEN_HEADER: "s3cr3t-token"}
+        )
+        assert response.status_code == 200
+        assert response.get_json()["records"] == 2
+
+    def test_wrong_internal_token_is_rejected(self, web_app, tmp_db) -> None:
+        """token 不对 → 回落会话校验 → 匿名 401（头里有东西不等于通过）。"""
+        from starwatt.web.security import INTERNAL_TOKEN_HEADER
+
+        set_many({"api_internal_token": "s3cr3t-token"})
+        response = web_app.test_client().post(
+            "/api/refresh", headers={INTERNAL_TOKEN_HEADER: "wrong"}
+        )
+        assert response.status_code == 401
+
+    def test_unconfigured_token_still_requires_session(self, web_app, tmp_db) -> None:
+        """未配置 token 时**一律拒绝**（fail-closed）—— 空 token ≠ 不校验。"""
+        from starwatt.web.security import INTERNAL_TOKEN_HEADER
+
+        response = web_app.test_client().post(
+            "/api/refresh", headers={INTERNAL_TOKEN_HEADER: ""}
+        )
+        assert response.status_code == 401
 
 
 # ===========================================================================
