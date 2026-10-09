@@ -107,9 +107,19 @@ class TestDailySummary:
         assert summary["avg7_kwh"] == pytest.approx(4.0)  # (3 + 5) / 2
         assert summary["month_total_kwh"] == pytest.approx(108.0)
 
-    def test_violations_today_counts_current_month(self, tmp_db) -> None:
+    def test_violations_today_counts_today_only(self, tmp_db) -> None:
+        """「今日违规」只算今天 —— 同月的**昨天**不算。
+
+        📌 卡片上写的是「⚠ 今日违规」（见 ``card_builder``），但实现原来按
+        **月份前缀**过滤，而 ``ViolationRepo.recent(days=1)`` 的截止是
+        「昨天」这个日期 —— 于是昨天的违规被算进了今天。
+        这条测试原本叫 ``test_violations_today_counts_current_month``，
+        只种了今天的数据，两种写法都能通过，等于把错误行为写成了规范。
+        """
         _seed_room()
-        _seed_violations(["2026-10-06 09:00:00", "2026-10-06 10:00:00"])
+        _seed_violations(
+            ["2026-10-06 09:00:00", "2026-10-06 10:00:00", "2026-10-05 22:00:00"]
+        )
         assert reports.daily_summary(now=NOW)["violations_today"] == 2
 
     def test_single_row_has_no_delta(self, tmp_db) -> None:

@@ -167,10 +167,15 @@ def daily_summary(*, now: datetime | None = None) -> dict[str, Any]:
 
     violations_today = 0
     if room_id:
+        # 📌 必须按**今天**过滤，不能按月份前缀（``_month_prefix``）。
+        # ``ViolationRepo.recent(days=1)`` 的截止是「昨天」这个**日期**，
+        # 所以取回的行同时含昨天与今天；卡片上写的是「今日违规」
+        # （card_builder 的 ⚠ 今日违规），按月份过滤会把昨天的违规算进来。
+        today_prefix = moment.strftime("%Y-%m-%d")
         violations_today = sum(
             1
             for v in _violation_rows(room_id, 1)
-            if str(v.get("dt") or "").startswith(month_prefix)
+            if str(v.get("dt") or "").startswith(today_prefix)
         )
 
     return {
