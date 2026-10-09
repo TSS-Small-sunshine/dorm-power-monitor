@@ -67,6 +67,33 @@
 
 ---
 
+## ⚡ 一键跑起来
+
+三条路，选一条（详细说明见 [`docs/DEPLOY.md`](docs/DEPLOY.md)）：
+
+```bash
+# ① Docker（推荐，amd64 / arm64 / armv7 都行）
+curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/docker-compose.yml
+docker compose up -d && docker compose logs starwatt | grep 初始密码
+
+# ② 裸机（Debian/Ubuntu，amd64 / arm64）
+git clone https://github.com/TSS-Small-sunshine/dorm-power-monitor.git && cd dorm-power-monitor
+sudo ./install.sh          # 装完会打印一次初始密码
+
+# ③ 离线/断网机器：从 Release 下载 offline 包，内含 amd64 + arm64 镜像
+#    https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
+```
+
+> **国内网络慢？** `raw.githubusercontent.com` 经常连不上，两个办法：
+> * 用加速镜像拉文件：把 `https://raw.githubusercontent.com/` 换成
+>   `https://gh-proxy.com/https://raw.githubusercontent.com/`
+> * 直接从 [Release 页面](https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases)
+>   下载 `docker-compose.yml` 或整个离线包（离线包不依赖 GitHub 网络）
+>
+> 镜像在 ghcr.io（公开、可匿名拉取）：`docker pull ghcr.io/tss-small-sunshine/starwatt:latest`
+
+---
+
 ## 🚀 快速开始（开发）
 
 **前置**：Python ≥ 3.10、Node ≥ 20（前端）。Linux / macOS / Windows 都可以。
@@ -490,6 +517,24 @@ sudo systemctl start dorm-web
 ## 📜 License
 
 MIT（见 [`LICENSE`](LICENSE)）。
+
+## 🔒 隐私说明：不收集任何数据
+
+这一条值得单独写出来，因为它和很多同类工具**不一样**：
+
+| | StarWatt 的做法 |
+|---|---|
+| 遥测 / 埋点 | **完全没有**。代码里没有任何上报通道，不会向任何第三方发送请求 |
+| 你的凭据 | 只存在**你自己机器上**的 `records.db` 里；openid / 飞书 / QQ 密钥用 `FLASK_SECRET_KEY` 派生密钥**加密存储**，日志里自动打码 |
+| 账号数据 | 只有你自己建的用户名和密码哈希（stdlib `scrypt`），没有手机号/邮箱字段 |
+| 出网请求 | 只有两个方向：① 你配置的**学校接口**（抓电量）② 你配置的**飞书/QQ 机器人**（发推送）。除此之外不发任何请求 |
+| 第三方依赖 | 不需要账号、不需要云服务、没有 CDN 回连（字体与 Chart.js 全部本地化） |
+
+也就是说：**装了之后，数据只在你和学校系统之间流动。** 想彻底删掉，删掉那个
+`records.db` 和 `.env` 即可（见 [`docs/DEPLOY.md`](docs/DEPLOY.md) 的卸载一节）。
+
+> 顺便提醒：因为「每个宿舍自己搭一套」，你的室友访问的是**你这台机器**，
+> 别忘了按 [`docs/DEPLOY.md`](docs/DEPLOY.md) 配 HTTPS 与 nginx。
 
 ## 🙏 致谢
 
