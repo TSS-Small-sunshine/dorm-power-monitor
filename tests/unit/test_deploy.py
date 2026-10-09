@@ -230,8 +230,8 @@ class TestCompose:
     def test_default_tag_matches_the_release_tag_scheme(self) -> None:
         """compose 的默认 tag 必须与 release.yml 产出的 tag 对得上。
 
-        发布侧用 ``type=semver,pattern={{version}}``：推 ``v2.0.1-starcore``
-        会产出 tag ``2.0.1-starcore`` —— 也就是 compose 里的默认值。
+        发布侧用 ``type=semver,pattern={{version}}``：推 ``v2.0.2-starcore``
+        会产出 tag ``2.0.2-starcore`` —— 也就是 compose 里的默认值。
         这两处一旦漂移，用户 `docker compose up -d` 就会去拉一个不存在的 tag。
 
         ⚠️ 每次发版都要把这里的期望值和 compose 的默认值一起更新
@@ -239,7 +239,7 @@ class TestCompose:
         """
         compose = _read(COMPOSE)
         default_tag = compose.split("${STARWATT_TAG:-", 1)[1].split("}", 1)[0]
-        assert default_tag == "2.0.1-starcore", default_tag
+        assert default_tag == "2.0.2-starcore", default_tag
         assert "type=semver,pattern={{version}}" in _read(RELEASE)
 
     def test_image_repository_matches_compose(self) -> None:
