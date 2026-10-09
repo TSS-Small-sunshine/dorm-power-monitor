@@ -249,19 +249,43 @@ def redact(text: str) -> str:
 
 
 class RedactingFilter(logging.Filter):
-    """在**格式化之后**脱敏 —— 因此 f-string / ``%`` / ``.format()`` 都拦得住。
+    """把 ``record.msg`` 换成**已脱敏的整条消息**。
+
+    filter 跑在 formatter **之前**，但这里先求值 ``getMessage()`` 再写回
+    ``msg``、清空 ``args`` —— 所以 f-string / ``%`` / ``.format()`` 三种写法
+    都拦得住（它们最终都汇进这一条文本）。
 
     挂在 handler 上（不是 logger 上）：这样即使某处代码直接调
     ``handler.handle(record)`` 也不会绕过。
+
+    ⚠️ **异常栈同样要脱敏**（``exc_info`` / ``stack_info``）：抓取异常经常把
+    带 ``?openid=...`` 的完整 URL 写进异常文本，而 traceback 是格式化器从
+    ``record.exc_info`` 渲染出来的 —— 只处理 ``record.msg`` 等于给凭据留了
+    一个后门。做法是**预渲染进 ``exc_text``**（``Formatter.format`` 见到
+    ``exc_text`` 就不再自己调 ``formatException``）。
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             record.msg = redact(record.getMessage())
             record.args = ()  # 已经格式化进 msg 了，清空避免二次格式化
+            # ⚠️ 不能写成 ``if record.exc_info and not record.exc_text`` ——
+            # ``exc_text`` 会被**先跑的那个 handler** 缓存（pytest 的日志插件、
+            # stdout + file 双 handler 都会），于是后跑的 handler 会「因为已经
+            # 有 exc_text」而跳过脱敏，把明文原样写出去。无论谁先渲染过，
+            # 这里都必须对最终的 exc_text 再脱敏一次。
+            if record.exc_info and not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = redact(record.exc_text)
+            if record.stack_info:
+                record.stack_info = redact(record.stack_info)
         except Exception:  # noqa: BLE001 —— 日志绝不能让主流程崩
             record.msg = "<日志脱敏失败，已屏蔽原文>"
             record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
         return True
 
 
@@ -299,8 +323,13 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+        # 优先用 exc_text：RedactingFilter 已经脱敏过它。
+        # 直接 formatException(record.exc_info) 会**绕过脱敏** —— 异常消息里的
+        # 凭据（抓取异常常带 ?openid=... 的完整 URL）会明文进 JSON 日志。
+        if record.exc_text or record.exc_info:
+            payload["exception"] = record.exc_text or self.formatException(
+                record.exc_info
+            )
         return json.dumps(payload, ensure_ascii=False)
 
 
