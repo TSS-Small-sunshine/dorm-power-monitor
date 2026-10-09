@@ -297,6 +297,41 @@ class TestSetup:
         payload = json.loads(read().strip())
         assert "ValueError: boom" in payload["exception"]
 
+    def test_exception_traceback_is_redacted(self, capture) -> None:
+        """异常栈里的凭据必须同样被脱敏。
+
+        📌 抓取异常常把 ``?openid=...`` 的完整 URL 写进异常文本，而 traceback
+        是格式化器从 ``record.exc_info`` 渲染的 —— 只脱敏 ``record.msg``
+        等于给凭据留了后门。这里刻意用**不带 ``openid=`` 前缀**的形式，
+        只有「登记值替换」这一条防线拦得住它。
+        """
+        stream, read = capture
+        ls.setup_logging(level="INFO", fmt="text", stream=stream)
+        ls.register_secret(FAKE_CRED)
+        try:
+            raise RuntimeError(f"凭据 {FAKE_CRED} 无法使用")
+        except RuntimeError:
+            ls.get_logger("scrape").exception("抓取崩溃")
+
+        text = read()
+        assert FAKE_CRED not in text
+        assert "RuntimeError" in text  # 栈本身保留
+        assert "抓取崩溃" in text  # 上下文保留
+
+    def test_json_exception_traceback_is_redacted(self, capture) -> None:
+        """JSON 格式器也要用脱敏后的 ``exc_text``（它原本忽略这个字段）。"""
+        stream, read = capture
+        ls.setup_logging(level="INFO", fmt="json", stream=stream)
+        ls.register_secret(FAKE_CRED)
+        try:
+            raise RuntimeError(f"凭据 {FAKE_CRED} 无法使用")
+        except RuntimeError:
+            ls.get_logger("scrape").exception("抓取崩溃")
+
+        payload = json.loads(read().strip())
+        assert FAKE_CRED not in payload["exception"]
+        assert "RuntimeError" in payload["exception"]
+
     def test_invalid_format_falls_back_to_text(self, capture) -> None:
         stream, read = capture
         ls.setup_logging(level="INFO", fmt="yaml", stream=stream)
