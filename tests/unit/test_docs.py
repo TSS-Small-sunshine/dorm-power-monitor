@@ -18,7 +18,7 @@ import pytest
 
 PROJ = Path(__file__).resolve().parents[2]
 
-#: 面向使用者的四份文档（N7）+ 扩展指南（Q18）+ 贡献指南 + 切换验收（M7）
+#: 面向使用者的四份文档（N7）+ 扩展指南（Q18）+ 贡献指南 + 切换验收（M7）+ 审计报告
 REQUIRED_DOCS = {
     PROJ / "docs" / "DEPLOY.md": "部署指南",
     PROJ / "docs" / "DEPLOY_PAAS.md": "托管平台部署指南",
@@ -27,6 +27,7 @@ REQUIRED_DOCS = {
     PROJ / "docs" / "UPGRADE.md": "升级与回滚",
     PROJ / "docs" / "M7_CUTOVER.md": "切换与验收指南",
     PROJ / "docs" / "AGENT_RUNBOOK.md": "服务器切换 Runbook（交给服务器 Agent）",
+    PROJ / "docs" / "AUDIT_REPORT.md": "全面审计报告",
     PROJ / "docs" / "EXTENDING.md": "扩展指南",
     PROJ / "CONTRIBUTING.md": "贡献指南",
 }
@@ -187,6 +188,41 @@ class TestAgentRunbook:
         assert "键名" in text
         assert ("只贴键名" in text) or ("只报键名" in text) or ("只要键名" in text)
         assert "不要值" in text or "不要把值贴" in text
+
+
+class TestAuditReport:
+    """`docs/AUDIT_REPORT.md` 是「哪些坑踩过」的唯一留档。
+
+    它退步的代价是：下一个改这段代码的人会把这些坑重新踩一遍 ——
+    所以每条断言都对应一个**真实修过的缺陷**，不是形式主义。
+    """
+
+    @staticmethod
+    def _text() -> str:
+        return (PROJ / "docs" / "AUDIT_REPORT.md").read_text(encoding="utf-8")
+
+    def test_documents_every_defect(self) -> None:
+        """每个已修缺陷都要在报告里留名（用定位它的关键字）。"""
+        text = self._text()
+        for marker in (
+            "post_form",  # P0：客户端拒绝 JSON 数组
+            "update_dt",  # 电表「最后上报」
+            "daily_avg",  # 概览日均（窗口 + 充值两处）
+            "hourly_used",  # 窗口副作用
+            "violations_today",  # 今日违规
+            "exc_info",  # 脱敏漏异常栈
+            ".backup",  # runbook 的 WAL 备份
+            "2.0.1",  # 版本指向 / compose 默认值
+        ):
+            assert marker in text, marker
+
+    def test_records_the_evidence_and_the_pattern(self) -> None:
+        """报告必须写清「怎么发现的」与那条规律 —— 否则只是流水账。"""
+        text = self._text()
+        assert "真实响应" in text  # 证据来源
+        assert "孪生兄弟" in text  # 规律
+        assert "为什么测试全绿却漏了这些" in text
+        assert "遗留建议" in text  # 未采纳项也要留痕
 
 
 class TestDbCompatibilityTool:
