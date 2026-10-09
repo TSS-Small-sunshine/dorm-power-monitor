@@ -203,27 +203,29 @@ tests/                 unit / integration / regression（契约快照）
 一次发版只有三步（其余全由 CI 做）：
 
 ```bash
-# 1. 把版本号写进 compose 的默认值（新用户 `docker compose up -d` 拿到的就是它）
-#    docker-compose.yml:  ${STARWATT_TAG:-2.0.1-starcore}
-#    tests/unit/test_deploy.py:  期望值同步改（这条测试就是防漂移的）
+# 1. 把版本号写进三处（新用户 `docker compose up -d` 拿到的就是它）
+#    starwatt/__init__.py:      __version__ = "2.0.2"
+#    pyproject.toml:            version = "2.0.2"
+#    docker-compose.yml:        ${STARWATT_TAG:-2.0.2-starcore}
+#    tests/unit/test_deploy.py: 期望值同步改（这条测试就是防漂移的）
 python -m pytest tests/unit/test_deploy.py -q
 
 # 2. 提交并推 main
-git commit -am "chore: bump the compose default tag to 2.0.1-starcore" && git push
+git commit -am "chore(release): 2.0.2" && git push
 
 # 3. 打 tag —— 这一步才真正触发构建与发布
-git tag -a v2.0.1-starcore -m "StarWatt 2.0.1 星核 / Star Core"
-git push origin v2.0.1-starcore
+git tag -a v2.0.2-starcore -m "StarWatt 2.0.2 星核 / Star Core"
+git push origin v2.0.2-starcore
 ```
 
 推完 tag 后 CI 会：跑测试（verify）→ 构建 amd64 + arm64 → 构建 armv7（失败不阻断）→
 导出镜像与离线包并**真起容器冒烟** → 建 Release。
 
-**tag 命名**：必须 `v` 开头，且是合法 semver（`v2.0.1-starcore` 里的 `-starcore`
+**tag 命名**：必须 `v` 开头，且是合法 semver（`v2.0.2-starcore` 里的 `-starcore`
 被当作 prerelease 后缀，`latest` 仍会打上；带 `-rc` / `-beta` / `-alpha` 的则不会）。
 
-**镜像标签**会自动生成：`2.0.1-starcore`、`v2.0.1-starcore`、`latest`，
-以及 armv7 专用的 `2.0.1-starcore-armv7`。
+**镜像标签**会自动生成：`2.0.2-starcore`、`v2.0.2-starcore`、`latest`，
+以及 armv7 专用的 `2.0.2-starcore-armv7`。
 
 > ⚠️ **没有** `2.0` 这种主次版本标签：`-starcore` 让版本号按 semver 算 prerelease，
 > 而 docker metadata 对 prerelease 只生成完整版本号 + `latest`，
