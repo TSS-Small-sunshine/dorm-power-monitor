@@ -55,12 +55,36 @@ export BOOTSTRAP_ADMIN_PASSWORD='Str0ng-Pass!'   # 或在 .env 里写
 ## 二、提交前必跑（与 CI 一致）
 
 ```bash
-python -m pytest -q                 # 全量测试（约 1400 项）
-python -m ruff check .              # 静态检查
-python -m scripts.ast_guard         # 分层守卫 R1–R8
-python -m scripts.secret_scan       # 凭据扫描
-python -m mypy starwatt/            # 类型检查（存量告警见下）
-cd frontend && npm run build        # vue-tsc 类型检查 + 构建
+python -m pytest -q                      # 全量测试（约 1480 项）
+python -m ruff check --no-cache .        # 静态检查（见下面的「假绿」警告）
+python -m scripts.ast_guard              # 分层守卫 R1–R8
+python -m scripts.secret_scan            # 凭据扫描
+python -m mypy starwatt/                 # 类型检查（存量告警见下）
+cd frontend && npm run build             # vue-tsc 类型检查 + 构建
+```
+
+### ⚠️ 本地「全绿」可能是假的：两个踩过的坑
+
+CI 是在**全新 clone**（无缓存、无本地残留）上跑的，而开发机上这两样东西
+都会让本地结论和 CI 不一致：
+
+1. **过期的 `.ruff_cache`**
+   缓存条目按「文件路径 + mtime + size」复用。升级过 ruff 版本之后，旧版本
+   写的「干净」结论会被新版本直接复用 —— 于是本地报 `All checks passed!`，
+   CI 却报错。**对不上时先 `rm -rf .ruff_cache`，或直接加 `--no-cache`。**
+
+2. **残留的旧目录会改变导入分类**
+   ruff 的 isort 按「本地是否存在同名模块」分类。legacy 留下的
+   `db/__pycache__/`（未跟踪，但目录存在）会让 `import db` 被判成
+   first-party，分组随之改变 —— 同一个文件、同一版 ruff，两边结论不同。
+   现在 `pyproject.toml` 里已经**显式**写了 `known-first-party = ["starwatt"]`
+   把它钉死，但**删掉残留目录**仍然是更好的做法。
+
+**结论：本地全绿不等于 CI 全绿。** 改完分发/构建相关文件后，最可靠的验证是
+
+```bash
+git clone --depth 1 --branch <你的分支> <远端> /tmp/verify && cd /tmp/verify
+python -m ruff check --no-cache . && python -m pytest -q
 ```
 
 `mypy` 目前有 **9 个存量错误**（都在 M1–M3 的旧模块），新增代码**不应**

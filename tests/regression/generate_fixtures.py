@@ -91,6 +91,7 @@ def snap_schema() -> dict:
 # ---------------------------------------------------------------------------
 def snap_algorithms() -> dict:
     import dorm_power
+
     import web
 
     def rows(*pairs: tuple[str, float | None]) -> list[dict]:
@@ -294,6 +295,7 @@ def _frozen_modules():
 
     import dorm_power
     import feishu_bot
+
     import web
 
     @contextlib.contextmanager
@@ -341,11 +343,11 @@ def _offline():
 
 
 def snap_behaviors() -> dict:
+    import db
     import dorm_power
     import feishu_bot
-    import web
 
-    import db
+    import web
 
     out: dict = {}
 
