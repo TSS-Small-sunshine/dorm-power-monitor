@@ -1,0 +1,64 @@
+name: Retag
+
+# =============================================================================
+# 只重打镜像标签（不重新构建）
+# =============================================================================
+# 为什么单独一个工作流
+# ====================
+# 有时候镜像本身没问题，只是**标签**需要调整 —— 例如某次发布忘了带 latest。
+# 重新推 tag 会触发整套多架构构建（QEMU 下 10–20 分钟），完全没必要：
+# ``docker buildx imagetools create`` 在**清单层面**复制引用，几秒钟完成，
+# 而且**保留多架构**（用 docker pull/tag/push 只会得到单架构，是错的）。
+#
+# 用法（工作流必须存在于默认分支才能手动触发，所以先合并到 main）
+# =====================================================================
+#   gh workflow run retag.yml -f from=2.0.0-starcore -f to=latest
+#
+# 或者在 Actions 页面点「Retag」→ Run workflow。
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: '源 tag（例如 2.0.0-starcore）'
+        required: true
+      to:
+        description: '目标 tag（例如 latest）'
+        required: true
+        default: 'latest'
+
+permissions:
+  packages: write
+
+env:
+  IMAGE_NAME: starwatt
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 算出小写镜像名
+        id: image
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/${IMAGE_NAME}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 复制标签（保留多架构清单）
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "${{ steps.image.outputs.image }}:${{ inputs.to }}" \
+            "${{ steps.image.outputs.image }}:${{ inputs.from }}"
+          echo "已把 ${{ inputs.from }} 复制为 ${{ inputs.to }}" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools inspect "${{ steps.image.outputs.image }}:${{ inputs.to }}"

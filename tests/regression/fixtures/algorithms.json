@@ -1,0 +1,88 @@
+{
+  "dorm_power.calc_days_remaining": {
+    "remain=-1.0,avg=2.0": 0.0,
+    "remain=0.0,avg=2.0": 0.0,
+    "remain=10.0,avg=0.0": null,
+    "remain=10.0,avg=2.0": 5.0,
+    "remain=10.0,avg=None": null,
+    "remain=100.0,avg=2.0": 50.0,
+    "remain=None,avg=2.0": null,
+    "remain=None,avg=None": null
+  },
+  "web._compute_monthly_projection": {
+    "empty_stats": {
+      "avg_daily": null,
+      "days_left": 24,
+      "days_observed": 0,
+      "eqprice": 0.5,
+      "monthly_projection": null,
+      "used_kwh": null
+    },
+    "no_daily_avg": {
+      "avg_daily": null,
+      "days_left": 24,
+      "days_observed": 0,
+      "eqprice": 0.5,
+      "monthly_projection": null,
+      "used_kwh": null
+    },
+    "normal": {
+      "avg_daily": 2.0,
+      "days_left": 24,
+      "days_observed": 0,
+      "eqprice": 0.5,
+      "monthly_projection": 24.0,
+      "used_kwh": null
+    }
+  },
+  "web._stats": {
+    "empty": {
+      "daily_avg": null,
+      "hourly_used": null,
+      "read_time": null,
+      "remain": null
+    },
+    "no_read_time": {
+      "daily_avg": null,
+      "hourly_used": 0.5,
+      "read_time": null,
+      "remain": 10.5
+    },
+    "null_remain": {
+      "daily_avg": null,
+      "hourly_used": null,
+      "read_time": null,
+      "remain": null
+    },
+    "remain_increase": {
+      "daily_avg": null,
+      "hourly_used": null,
+      "read_time": "2026-10-06 12:00:00",
+      "remain": 50.0
+    },
+    "seven_days": {
+      "daily_avg": 1.0,
+      "hourly_used": 7.0,
+      "read_time": "2026-10-06 12:00:00",
+      "remain": 13.0
+    },
+    "single": {
+      "daily_avg": null,
+      "hourly_used": null,
+      "read_time": "2026-10-06 11:00:00",
+      "remain": 10.5
+    },
+    "two_1h_apart": {
+      "daily_avg": null,
+      "hourly_used": 0.5,
+      "read_time": "2026-10-06 12:00:00",
+      "remain": 10.5
+    },
+    "two_30min_apart": {
+      "daily_avg": null,
+      "hourly_used": null,
+      "read_time": "2026-10-06 12:00:00",
+      "remain": 10.5
+    }
+  }
+}

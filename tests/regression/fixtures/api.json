@@ -1,0 +1,81 @@
+{
+  "/api/data?hours=168": {
+    "keys": [
+      "hours",
+      "rows",
+      "stats"
+    ],
+    "monthly_keys": [],
+    "row_keys": [
+      "id",
+      "read_time",
+      "remain",
+      "ts"
+    ],
+    "run_status_keys": [],
+    "stats_keys": [
+      "daily_avg",
+      "hourly_used",
+      "read_time",
+      "remain"
+    ],
+    "status": 200
+  },
+  "/api/data?hours=24": {
+    "keys": [
+      "hours",
+      "rows",
+      "stats"
+    ],
+    "monthly_keys": [],
+    "row_keys": [
+      "id",
+      "read_time",
+      "remain",
+      "ts"
+    ],
+    "run_status_keys": [],
+    "stats_keys": [
+      "daily_avg",
+      "hourly_used",
+      "read_time",
+      "remain"
+    ],
+    "status": 200
+  },
+  "/api/live": {
+    "keys": [
+      "eqprice",
+      "latest_ts",
+      "monthly_breakdown",
+      "monthly_projection",
+      "run_status",
+      "scrape_status",
+      "stale",
+      "stats"
+    ],
+    "monthly_keys": [
+      "avg_daily",
+      "days_left",
+      "days_observed",
+      "eqprice",
+      "monthly_projection",
+      "used_kwh"
+    ],
+    "row_keys": [],
+    "run_status_keys": [
+      "cur",
+      "run_status",
+      "update_dt",
+      "vol",
+      "yggl"
+    ],
+    "stats_keys": [
+      "daily_avg",
+      "hourly_used",
+      "read_time",
+      "remain"
+    ],
+    "status": 200
+  }
+}

@@ -8,9 +8,18 @@ __pycache__/
 
 # Tests
 tests/legacy/
-_tmp_*.py
-_tmp_*.txt
-_tmp_*.zip
+/_tmp_*.py
+/_tmp_*.txt
+/_tmp_*.zip
+
+# 本地临时文件（调试输出 / 提交信息草稿 / 探针文件）
+# 约定：以下划线开头、**只放在仓库根目录**、不放进任何包
+#   ⚠️ 必须带前导 `/`（锚定根目录）：写成 `_*.py` 会连 `__init__.py`
+#      一起忽略 —— 包初始化文件被静默丢弃，新克隆的仓库直接 import 失败。
+/_*.txt
+/_*.py
+/_*.json
+
 
 # OS
 .DS_Store
@@ -23,6 +32,16 @@ backups/
 dist/
 build/
 
+# Frontend
+node_modules/
+# Vite 产物落到 static/（M5 §5.9）—— 由 CI / Docker 构建，不进仓库；
+# ⚠️ index.html 必须与 assets 一起忽略：只提交壳文件的话，里面的
+#    `/static/assets/index-<hash>.js` 会 404，页面白屏且很难看出原因。
+#    字体（static/fonts/）是仓库资产，不受影响。
+/static/index.html
+/static/assets/
+/static/.vite/
+
 # IDE
 .vscode/
 .idea/
@@ -31,3 +50,12 @@ build/
 .env
 .env.local
 .github_pat
+# Runtime data (never commit)
+records.db
+*.db-wal
+*.db-shm
+*.db-journal
+tests/**/records.db
+
+# 发布说明（由 release workflow 生成；本地用脚本复现时也会落在根目录）
+/notes.md

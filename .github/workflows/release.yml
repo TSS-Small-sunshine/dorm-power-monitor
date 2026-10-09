@@ -1,0 +1,438 @@
+name: Release
+
+# =============================================================================
+# StarWatt 星瓦 —— 发布（M6 §6.2 / N1 / N2 / N5 / RK5 / RK8）
+# =============================================================================
+# 触发：推 `v*` 标签（例如 v2.0.0-starcore），或手动 workflow_dispatch。
+#
+# 产物
+# ====
+#   1. 多架构镜像 → ghcr.io/<owner>/starwatt
+#      linux/amd64 + linux/arm64 是**必须成功**的两条腿（N1/N2）；
+#      linux/arm/v7 单独一个 job，失败**不阻断**发布（RK5：armv7 降级为
+#      「仅 Docker 离线包」—— 镜像尽力而为，离线包照样给）。
+#   2. 离线包（N5 / RK8：国内拉镜像慢）
+#      starwatt-<ver>-<arch>.tar.gz     只有镜像（docker load 即用）
+#      starwatt-<ver>-offline.tar.gz    镜像 + compose + .env.example +
+#                                       install.sh + 文档（断网机器也能装）
+#
+# 为什么在发布前跑测试
+# ====================
+# 标签一旦推上去就会有人拉。让 `verify` 先跑一遍 CI 的检查，
+# 再开始构建 —— 失败时**不发镜像**，而不是发一个坏的。
+# =============================================================================
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '要构建的平台（逗号分隔）'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+
+permissions:
+  contents: write # 建 Release、传离线包
+  packages: write # 推 ghcr
+
+env:
+  # GHCR 要求镜像名**全小写**，而仓库名里有大写字母（TSS-Small-sunshine）
+  IMAGE_NAME: starwatt
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. 发布前把关：CI 的检查在这里再跑一遍
+  # ---------------------------------------------------------------------------
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: AST guard (R1-R8)
+        run: python -m scripts.ast_guard
+
+      - name: Pytest
+        run: python -m pytest -q
+
+      - name: Secret scan
+        run: python -m scripts.secret_scan
+
+  # ---------------------------------------------------------------------------
+  # 2. 主力两条腿：amd64 + arm64（必须成功）
+  # ---------------------------------------------------------------------------
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 算出小写镜像名与版本号
+        id: image
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/${IMAGE_NAME}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "镜像：$IMAGE"
+
+      - name: 版本号（标签去掉前缀 v；手动触发时用分支名）
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # arm64 是在 amd64 runner 上用 QEMU 模拟构建的（C 扩展照常编译）
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            # ⚠️ 别写成 !contains(github.ref_name, 'rc') —— 本项目的版本代号是
+            #    「starcore」，里面**正好含 rc**，那样 latest 永远打不上（踩过）。
+            #    判断预发布必须带连字符，写成 -rc / -beta / -alpha。
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+
+      - name: 构建并推送（amd64 + arm64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 多架构构建很慢，缓存必须开（RK5 的缓解措施之一）
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: 摘要
+        run: |
+          {
+            echo "### 镜像已推送 :whale:"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 3. armv7：单独一条腿，失败不阻断（RK5）
+  # ---------------------------------------------------------------------------
+  build-armv7:
+    needs: verify
+    runs-on: ubuntu-latest
+    continue-on-error: true # ← 关键：树莓派老机型构建超时不拖垮整个发布
+    outputs:
+      ok: ${{ steps.mark.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: image
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/${IMAGE_NAME}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.image }}
+          flavor: suffix=-armv7,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+
+      - name: 构建并推送（armv7）
+        id: build
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 记录结果
+        id: mark
+        run: |
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "armv7 构建成功" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### :warning: armv7 构建失败（RK5 已预期）"
+              echo
+              echo "按计划降级：armv7 只提供离线包，amd64/arm64 的发布不受影响。"
+              echo "详见 docs/DEPLOY.md 的「armv7 说明」。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 4. 离线包（N5 / RK8）+ 真容器冒烟
+  # ---------------------------------------------------------------------------
+  bundle:
+    needs: [build, build-armv7]
+    # armv7 失败也要照常出离线包（RK5 的降级路径）
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备变量
+        run: |
+          set -euo pipefail
+          echo "VERSION=${{ needs.build.outputs.version }}" >> "$GITHUB_ENV"
+          echo "IMAGE=${{ needs.build.outputs.image }}" >> "$GITHUB_ENV"
+
+      - name: 导出 amd64 镜像（独立包）
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$IMAGE:$VERSION"
+          docker save "$IMAGE:$VERSION" | gzip -9 > "starwatt-$VERSION-amd64.tar.gz"
+          ls -lh "starwatt-$VERSION-amd64.tar.gz"
+
+      - name: 导出 arm64 镜像（放进 offline 包）
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 "$IMAGE:$VERSION"
+          docker save "$IMAGE:$VERSION" | gzip -9 > "starwatt-$VERSION-arm64.tar.gz"
+          ls -lh "starwatt-$VERSION-arm64.tar.gz"
+
+      # ---- 真容器冒烟：离线包必须能 load、能起、能过 /healthz -------------
+      # 这一步是「离线包可 docker load 并启动」这条 DoD 的**唯一可信证据**
+      - name: 冒烟：docker load + 起容器 + /healthz
+        run: |
+          set -euo pipefail
+          docker load -i "starwatt-$VERSION-amd64.tar.gz"
+
+          # 用命名卷（与 compose 一致）：Docker 会把镜像里 /data 的属主带过来，
+          # 换成宿主目录会因为容器内是非 root(10001) 而写不进去
+          docker volume create starwatt-smoke >/dev/null
+          docker run -d --name starwatt-smoke \
+            -p 127.0.0.1:5000:5000 \
+            -v starwatt-smoke:/data \
+            "$IMAGE:$VERSION"
+
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/healthz >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          echo "--- 容器日志 ---"
+          # ⚠️ 先落盘再 grep，不要写 `docker logs ... | grep -q`：
+          #    `grep -q` 命中后立刻退出 → docker 收到 SIGPIPE → 配合
+          #    `set -o pipefail` 整条命令非零。表现是「日志里明明有密码，
+          #    脚本却说没看到」，而且是**随机复现**（取决于谁先结束）——
+          #    和 entrypoint 里那个 `tr | head` 是同一类坑。
+          docker logs starwatt-smoke > /tmp/smoke.log 2>&1 || true
+          cat /tmp/smoke.log
+          if [ "$ok" != "1" ]; then
+            echo "::error::容器起来了但 /healthz 一直不通"
+            exit 1
+          fi
+
+          # 首启横幅（含随机密码）必须真的打印出来 —— entrypoint 的活证据
+          grep -q "初始密码" /tmp/smoke.log \
+            || { echo "::error::没看到首启随机密码横幅"; exit 1; }
+
+          # 首页必须返回 SPA（前端产物真的在镜像里，而不是空壳）
+          curl -fsS http://127.0.0.1:5000/ -o /tmp/index.html
+          grep -qi 'id="app"' /tmp/index.html \
+            || { echo "::error::首页不是 SPA —— 前端产物没进镜像？"; exit 1; }
+
+          docker rm -f starwatt-smoke
+          docker volume rm starwatt-smoke
+
+      - name: 组装 offline 包（镜像 + 文档 + 脚本）
+        run: |
+          set -euo pipefail
+          DIR="starwatt-$VERSION-offline"
+          mkdir -p "$DIR/images" "$DIR/deploy"
+          # ⚠️ 必须 cp 而不是 mv：mv 会把独立的 amd64 包搬进离线包，
+          #    于是 Release 上只剩一个产物，而文档里写的是两个（踩过）。
+          cp "starwatt-$VERSION-amd64.tar.gz" "starwatt-$VERSION-arm64.tar.gz" "$DIR/images/"
+
+          cp docker-compose.yml .env.example README.md install.sh "$DIR/"
+          cp deploy/dorm-web.service "$DIR/deploy/"
+          for doc in DEPLOY DEPLOY_PAAS FAQ CONFIG UPGRADE M7_CUTOVER; do
+            [ -f "docs/$doc.md" ] && cp "docs/$doc.md" "$DIR/" || true
+          done
+
+          cat > "$DIR/离线安装.txt" <<'TXT'
+          StarWatt 星瓦 · 离线安装（断网机器 / 拉镜像慢）
+          ================================================
+
+          1. 看架构（uname -m）：
+               x86_64  → images/starwatt-<版本>-amd64.tar.gz
+               aarch64 → images/starwatt-<版本>-arm64.tar.gz
+
+          2. 导入镜像：
+               docker load -i images/starwatt-<版本>-<架构>.tar.gz
+
+          3. 起服务：
+               docker compose up -d
+
+             没有 compose 也行：
+               docker run -d --name starwatt --restart unless-stopped \
+                 -p 127.0.0.1:5000:5000 -v starwatt-data:/data \
+                 ghcr.io/tss-small-sunshine/starwatt:<版本>
+
+          4. 取初始密码（**只打印这一次**）：
+               docker compose logs starwatt | grep 初始密码
+
+          5. 打开 http://127.0.0.1:5000 ，用 admin + 上面的密码登录，
+             会被强制改密。
+
+          数据与密钥都在数据卷里（starwatt-data），
+          其中 /data/.flask_secret_key 丢了就无法解密配置中心里的凭据 —— 请备份。
+          详细说明见 DEPLOY.md。
+          TXT
+
+          tar -czf "starwatt-$VERSION-offline.tar.gz" "$DIR"
+          ls -lh ./*.tar.gz
+          echo "OFFLINE=starwatt-$VERSION-offline.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starwatt-release-${{ needs.build.outputs.version }}
+          path: starwatt-*.tar.gz
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 5. 建 Release（只在推标签时）
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [build, bundle]
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    steps:
+      # ⚠️ 必须 checkout：`gh release create` 需要工作区里有 .git 才能确定仓库，
+      #    少了这一步会以「fatal: not a git repository」失败（踩过）。
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: starwatt-release-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: 写发布说明
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.build.outputs.version }}"
+          IMAGE="${{ needs.build.outputs.image }}"
+          cat > notes.md <<EOF
+          ## 安装
+
+          ### Docker（推荐）
+
+          \`\`\`bash
+          curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/docker-compose.yml
+          STARWATT_TAG=$VERSION docker compose up -d
+          docker compose logs starwatt | grep 初始密码   # 只打印一次
+          \`\`\`
+
+          打开 <http://127.0.0.1:5000> ，用 \`admin\` + 上面的密码登录，
+          会被**强制改密**。
+
+          ### 离线安装（断网机器 / 拉镜像慢）
+
+          下载 \`starwatt-$VERSION-offline.tar.gz\`（内含 amd64 + arm64 镜像与文档）：
+
+          \`\`\`bash
+          tar -xzf starwatt-$VERSION-offline.tar.gz
+          cd starwatt-$VERSION-offline && cat 离线安装.txt
+          \`\`\`
+
+          ### 裸机（Debian / Ubuntu，amd64 / arm64）
+
+          \`\`\`bash
+          git clone https://github.com/${GITHUB_REPOSITORY}.git
+          cd dorm-power-monitor && git checkout ${GITHUB_REF_NAME}
+          sudo ./install.sh
+          \`\`\`
+
+          ## 产物
+
+          | 文件 | 说明 |
+          |---|---|
+          | \`starwatt-$VERSION-amd64.tar.gz\` | amd64 镜像，\`docker load\` 即用 |
+          | \`starwatt-$VERSION-arm64.tar.gz\` | arm64 镜像，\`docker load\` 即用 |
+          | \`starwatt-$VERSION-offline.tar.gz\` | 离线包：**上面两个镜像** + compose + 文档 + install.sh |
+
+          镜像 \`$IMAGE:$VERSION\` 是多架构 manifest（amd64 / arm64；armv7 是单独的
+          \`$VERSION-armv7\` 标签）。离线包在 CI 里**真起过容器**：load → run →
+          \`/healthz\` 通 → 首页是 SPA → 日志里有首启随机密码。
+          EOF
+          cat notes.md
+
+      - name: 建 Release 并上传产物（幂等）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # 幂等：Release 已存在（例如上一次跑失败后又重跑）就只覆盖产物，
+          # 而不是报「already exists」把整个 job 弄红。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz --clobber
+          else
+            gh release create "$TAG" \
+              --title "StarWatt 星瓦 ${TAG}" \
+              --notes-file notes.md \
+              dist/*.tar.gz
+          fi
+          gh release view "$TAG" --json tagName,assets \
+            --jq '.tagName, (.assets[] | "  \(.name)  \(.size)")'

@@ -1,0 +1,60 @@
+# =============================================================================
+# Fly.io —— 全功能一键部署（含调度器与持久数据）
+# =============================================================================
+# 为什么 Fly 能、Vercel/Netlify/EdgeOne 不能
+# ==========================================
+# 这个应用需要三样东西，Fly 三样都有：
+#   1. **持久卷** —— SQLite 落在 /data（[mounts] 段），重启/重部署都不丢
+#   2. **常驻机器** —— 见下面的 auto_stop_machines = false：
+#      调度器要每 10 分钟抓一次，机器被停掉就等于不抓了
+#   3. **单实例** —— min_machines_running = 1 且不加副本（进程内调度器是单例）
+#
+# 首次部署
+# ========
+#   fly launch --copy-config --no-deploy      # 用本文件，不新建配置
+#   fly volumes create starwatt_data --size 1 # 建持久卷（名字要与 [mounts] 一致）
+#   fly deploy
+#   fly logs | grep 初始密码                   # 首启随机管理员密码，只打印一次
+#
+# 不需要配任何 secret：FLASK_SECRET_KEY 缺失时 entrypoint 会生成并写进
+# /data/.flask_secret_key（卷里），重启复用，不会每次换密钥。
+# =============================================================================
+
+app = "starwatt"
+primary_region = "hkg" # 香港：国内访问延迟较低
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DORM_DATA_DIR = "/data"
+  DB_PATH = "/data/records.db"
+  # ⚠️ 必须 0.0.0.0：gunicorn.conf.py 默认绑 127.0.0.1，那样 Fly 探活与转发都进不来
+  GUNICORN_BIND = "0.0.0.0:5000"
+  FLASK_PORT = "5000"
+
+# 持久卷：数据库与会话密钥都在这里
+[mounts]
+  source = "starwatt_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 5000
+  force_https = true
+  # ⚠️⚠️ 这两行是这个应用能不能正常工作的关键：
+  #   auto_stop_machines = false  → 机器不许因为没流量被停（停了就不抓取、不发日报）
+  #   min_machines_running = 1    → 至少留一个实例
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # 优雅关闭：SIGTERM 后给调度器时间把手上的抓取跑完（M1 的质量属性）
+  kill_signal = "SIGTERM"
+  kill_timeout = "30s"
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/healthz"
