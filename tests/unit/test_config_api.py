@@ -997,3 +997,116 @@ class TestUserManagement:
         entries = admin_client.get("/api/admin/audit").get_json()["entries"]
         actions = {entry["action"] for entry in entries}
         assert {"user.create", "user.delete"} <= actions
+
+
+# ===========================================================================
+# 功能开关状态（5.7）—— 前端「功能开关」页的全部数据来源
+# ===========================================================================
+class TestFlagsState:
+    """开关的父子语义与「此刻为什么没推」只有后端算得出来。"""
+
+    def test_lists_all_eighteen_switches(self, admin_client) -> None:
+        from starwatt.flags import FLAGS
+
+        payload = admin_client.get("/api/admin/flags").get_json()
+        assert {flag["key"] for flag in payload["flags"]} == set(FLAGS)
+        assert len(payload["flags"]) == 18
+
+    def test_three_groups_in_order(self, admin_client) -> None:
+        payload = admin_client.get("/api/admin/flags").get_json()
+        assert [group["kind"] for group in payload["groups"]] == ["master", "layer", "command"]
+        kinds = {flag["kind"] for flag in payload["flags"]}
+        assert kinds == {"master", "layer", "command"}
+        assert sum(1 for f in payload["flags"] if f["kind"] == "master") == 3
+        assert sum(1 for f in payload["flags"] if f["kind"] == "layer") == 8
+        assert sum(1 for f in payload["flags"] if f["kind"] == "command") == 7
+
+    def test_parents_are_exposed(self, admin_client) -> None:
+        payload = admin_client.get("/api/admin/flags").get_json()
+        by_key = {flag["key"]: flag for flag in payload["flags"]}
+        assert by_key["push_l1_enable"]["parent"] == "push_group_enabled"
+        assert by_key["cmd_help_enabled"]["parent"] == "push_bot_enabled"
+        assert by_key["push_group_enabled"]["parent"] is None
+
+    def test_bot_masters_default_off(self, admin_client) -> None:
+        """两个机器人总开关默认关闭（新装不该刷「未配置」错误）。"""
+        payload = admin_client.get("/api/admin/flags").get_json()
+        by_key = {flag["key"]: flag for flag in payload["flags"]}
+        assert by_key["push_group_enabled"]["enabled"] is True
+        assert by_key["push_bot_enabled"]["enabled"] is False
+        assert by_key["qq_bot_enabled"]["enabled"] is False
+
+    def test_suppression_reasons_explain_why(self, admin_client) -> None:
+        """关掉总开关 → 8 个层都带「为什么没推」的中文原因。"""
+        set_many({"push_group_enabled": False})
+        payload = admin_client.get("/api/admin/flags").get_json()
+        assert len(payload["suppressed"]) == 8
+        assert all("总开关" in item["reason"] for item in payload["suppressed"])
+
+    def test_suppression_is_empty_when_all_on(self, admin_client) -> None:
+        set_many({"quiet_hours_start": "00:00", "quiet_hours_end": "00:00"})
+        payload = admin_client.get("/api/admin/flags").get_json()
+        assert payload["suppressed"] == []
+        assert payload["quiet_hours"] is False
+
+    def test_layer_off_reason_names_the_layer(self, admin_client) -> None:
+        set_many({"quiet_hours_start": "00:00", "quiet_hours_end": "00:00"})
+        set_many({"push_l2_enable": False})
+        payload = admin_client.get("/api/admin/flags").get_json()
+        reasons = {item["layer"]: item["reason"] for item in payload["suppressed"]}
+        assert "push_l2_enable" in reasons["l2"]
+
+    def test_viewer_cannot_read(self, viewer_client) -> None:
+        assert viewer_client.get("/api/admin/flags").status_code == 403
+
+
+# ===========================================================================
+# 日志状态（5.8）
+# ===========================================================================
+class TestLoggingState:
+    def test_levels_and_categories(self, admin_client) -> None:
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["levels"] == [
+            "TRACE",
+            "DEBUG",
+            "INFO",
+            "NOTICE",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+        ]
+        assert len(payload["categories"]) == 8
+
+    def test_effective_level_follows_global(self, admin_client) -> None:
+        set_many({"log_level": "WARNING"})
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["global_level"] == "WARNING"
+        assert set(payload["effective"].values()) == {"WARNING"}
+
+    def test_module_override_wins(self, admin_client) -> None:
+        """🔑 模块级覆盖只影响那一个类别 —— 这是 Q20 的核心能力。"""
+        set_many({"log_level": "WARNING", "log_overrides": {"scrape": "DEBUG"}})
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["effective"]["scrape"] == "DEBUG"
+        assert payload["effective"]["push"] == "WARNING"
+
+    def test_unknown_category_in_overrides_is_hidden(self, admin_client) -> None:
+        set_many({"log_overrides": {"scrape": "DEBUG", "typo": "TRACE"}})
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["overrides"] == {"scrape": "DEBUG"}
+
+    def test_file_state(self, admin_client) -> None:
+        set_many({"log_file_enabled": True, "log_file_retention_days": 14})
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["file"]["enabled"] is True
+        assert payload["file"]["path"].endswith("starwatt.log")
+        assert payload["file"]["retention_days"] == 14
+
+    def test_reports_masked_secret_count(self, admin_client) -> None:
+        """脱敏在生效的证据（Q20 铁律：secret 不得进日志）。"""
+        payload = admin_client.get("/api/admin/logging").get_json()
+        assert payload["masked_secrets"] >= 0
+        assert isinstance(payload["masked_secrets"], int)
+
+    def test_viewer_cannot_read(self, viewer_client) -> None:
+        assert viewer_client.get("/api/admin/logging").status_code == 403

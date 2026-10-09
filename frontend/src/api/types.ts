@@ -322,3 +322,54 @@ export interface CommitResult extends ConfigUpdateResult {
   ok: boolean
   room_id?: string
 }
+
+// ---------------------------------------------------------------------------
+// 功能开关状态（5.7）—— GET /api/admin/flags
+// ---------------------------------------------------------------------------
+
+export type FlagKind = 'master' | 'layer' | 'command'
+
+export interface FlagInfo {
+  key: string
+  label: string
+  /** 总开关 key（分项开关才有） */
+  parent: string | null
+  kind: FlagKind
+  /** 此刻是否生效（总开关关闭时，分项恒为 false） */
+  enabled: boolean
+}
+
+/** 此刻被抑制的告警层 + 中文原因 */
+export interface SuppressedLayer {
+  layer: string
+  key: string
+  label: string
+  reason: string
+}
+
+export interface FlagsStatePayload {
+  groups: { kind: FlagKind; title: string }[]
+  flags: FlagInfo[]
+  suppressed: SuppressedLayer[]
+  quiet_hours: boolean
+}
+
+// ---------------------------------------------------------------------------
+// 日志状态（5.8）—— GET /api/admin/logging
+// ---------------------------------------------------------------------------
+
+export interface LoggingStatePayload {
+  /** 7 个级别（按数值升序） */
+  levels: string[]
+  /** 8 个业务类别 */
+  categories: string[]
+  global_level: string
+  format: string
+  /** 模块级覆盖（只含合法类别） */
+  overrides: Record<string, string>
+  /** 每个类别**实际生效**的级别 */
+  effective: Record<string, string>
+  file: { enabled: boolean; path: string; retention_days: number }
+  /** 已注册脱敏的 secret 数量（脱敏在生效的证据） */
+  masked_secrets: number
+}

@@ -34,7 +34,9 @@ import type {
   ConfigValuesPayload,
   DailyPayload,
   DataPayload,
+  FlagsStatePayload,
   LivePayload,
+  LoggingStatePayload,
   LoginPayload,
   MePayload,
   OobeAdvanceResult,
@@ -237,6 +239,12 @@ export const api = {
     request<{ entries: AuditEntry[] }>(
       `/api/admin/audit?limit=${limit}${action ? `&action=${encodeURIComponent(action)}` : ''}`,
     ),
+
+  /** 功能开关 + 此刻的生效状态与抑制原因（5.7） */
+  flagsState: () => request<FlagsStatePayload>('/api/admin/flags'),
+
+  /** 日志设置 + 每个类别实际生效的级别（5.8） */
+  loggingState: () => request<LoggingStatePayload>('/api/admin/logging'),
 
   // -------------------------------------------------------------------------
   // OOBE 引导（5 步 / 只有两个端点）
