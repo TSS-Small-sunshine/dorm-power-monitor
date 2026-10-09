@@ -125,7 +125,8 @@ Release 里有两个包：
 | 文件 | 内容 |
 |---|---|
 | `starwatt-<版本>-amd64.tar.gz` | 只有镜像（amd64） |
-| `starwatt-<版本>-offline.tar.gz` | amd64 + arm64 镜像 + compose + 文档 + install.sh |
+| `starwatt-<版本>-arm64.tar.gz` | 只有镜像（arm64） |
+| `starwatt-<版本>-offline.tar.gz` | 离线包：**上面两个镜像** + compose + 文档 + install.sh |
 
 ```bash
 tar -xzf starwatt-2.0.0-starcore-offline.tar.gz
