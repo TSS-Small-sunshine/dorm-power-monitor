@@ -103,6 +103,92 @@ class TestExtendingGuide:
         assert (PROJ / "scripts" / "ast_guard.py").is_file()
 
 
+class TestAgentRunbook:
+    """`docs/AGENT_RUNBOOK.md` 是交给服务器 Agent 的**唯一依据** —— 它退步会直接害人。
+
+    下面每条断言都对应一次真实踩坑或一次会丢数据的操作，不是形式主义。
+    """
+
+    @staticmethod
+    def _text() -> str:
+        return (PROJ / "docs" / "AGENT_RUNBOOK.md").read_text(encoding="utf-8")
+
+    def test_covers_every_phase(self) -> None:
+        text = self._text()
+        for marker in (
+            "§0 执行契约",
+            "§1 项目与本次任务",
+            "§2 Phase 0",
+            "§3 Phase 2",
+            "§4 Phase 3",
+            "§5 Phase 4",
+            "§6 Phase 5",
+            "§7 Phase 6",
+            "附录 A",
+            "附录 B",
+            "附录 C",
+        ):
+            assert marker in text, marker
+
+    def test_resolves_the_two_names(self) -> None:
+        """服务器上只有 dorm-power-monitor、没有 starwatt —— 第一次执行就卡在这。"""
+        text = self._text()
+        assert "dorm-power-monitor" in text and "StarWatt" in text
+        assert "不要以为找错了" in text
+
+    def test_states_the_decisions_instead_of_asking(self) -> None:
+        """已定决策必须写在文档里，否则 Agent 每一轮都会再问一遍。"""
+        text = self._text()
+        assert "已定决策" in text and "不要再问" in text
+        for decision in ("Docker", "5001", "5000", "/var/lib/dorm-power-monitor", "chown 10001"):
+            assert decision in text, decision
+
+    def test_carries_the_old_secret_key_into_the_container(self) -> None:
+        """🔴 不传旧 FLASK_SECRET_KEY → 配置中心里的凭据永久解不开（红线 R2）。"""
+        text = self._text()
+        assert "--env-file" in text
+        assert "FLASK_SECRET_KEY" in text
+        # 必须明确「复用」而不是让容器自己生成
+        assert "复用数据卷里的 FLASK_SECRET_KEY" in text
+        # 并且要有一个能直接验证解密是否成功的检查
+        assert "dorm_openid 解密" in text
+
+    def test_mounts_the_copied_database_explicitly(self) -> None:
+        """🔴 用 compose 的命名卷会忽略复制过去的库 → 新实例是空库，看起来像数据全丢。"""
+        text = self._text()
+        assert "-v /var/lib/dorm-power-monitor:/data" in text
+        assert "命名卷" in text and "空库" in text
+        # 旧写法（compose up -d）不得作为正式切换步骤出现
+        assert "docker compose up -d" not in text
+
+    def test_verifies_data_survived(self) -> None:
+        """「数据没丢」必须有三重证据，而不是一句承诺。"""
+        text = self._text()
+        assert "sha256sum /opt/dorm-power-monitor/records.db" in text
+        assert "COUNT(*), MIN(ts), MAX(ts)" in text
+        assert "行数" in text and "基线" in text
+
+    def test_has_the_three_red_lines(self) -> None:
+        text = self._text()
+        assert "红线" in text
+        assert "不得删除、覆盖、移动" in text
+        assert "不得覆盖" in text
+        assert "不得停止/重启旧服务" in text
+
+    def test_says_when_to_stop_and_ask(self) -> None:
+        """不自作主张是这份文档最重要的行为约束。"""
+        text = self._text()
+        assert "停下来报告" in text or "停下来问" in text
+        assert "不猜" in text
+
+    def test_never_asks_for_secret_values_in_reports(self) -> None:
+        text = self._text()
+        # 允许两种措辞，但必须明确要求「只给键名、不给值」
+        assert "键名" in text
+        assert ("只贴键名" in text) or ("只报键名" in text) or ("只要键名" in text)
+        assert "不要值" in text or "不要把值贴" in text
+
+
 class TestDbCompatibilityTool:
     """``scripts/check_db.py`` —— 「我这是哪一版」的答案，别让它从文档里消失。"""
 

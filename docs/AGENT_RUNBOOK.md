@@ -1,457 +1,804 @@
-# 服务器切换 Runbook（交给服务器上的 Agent 执行）
+# StarWatt 2.0 切换执行规范（服务器 Agent 的唯一依据）
 
-> **给使用这份文档的人**：把整个文件发给服务器上的 Agent，并告诉它
-> 「按这个 Runbook 执行，**每个阶段结束把结果报给我**，遇到决策点先问我」。
+> **这份文档是自包含的**：你（服务器上的 Agent）只需要读它，不需要向任何人追问
+> 「交付物在哪 / 用 Docker 还是裸机 / 端口怎么安排」—— 这些**已经定好并写在
+> [§1.4 已定决策](#14-已定决策不要再问)里**。
 >
-> 本文档面向 **amd64**（x86_64）服务器。目标：把旧的 StarWatt 1.x 换成 2.0，
-> **历史数据一条不丢**；能更新就更新，只有旧环境无法修复时才重装。
-
-## ⚠️ 先解决一个命名问题（会卡住侦察阶段）
-
-**同一个项目有两个名字**，服务器上看到的很可能是旧名字：
-
-| 你可能会看到 | 说明 |
-|---|---|
-| `dorm-power-monitor` | **1.x 时期的项目名**（目录 `/opt/dorm-power-monitor`、systemd 单元 `dorm-web.service`） |
-| `StarWatt` / `星瓦` / `starcore` | **2.0 起的项目名与版本代号** |
-| `starwatt` | 2.0 的 Python 包名（`import starwatt`）与镜像名 |
-
-**所以：如果服务器上只有 `dorm-power-monitor`、没有 `starwatt`，那是对的 ——
-`/opt/dorm-power-monitor` 就是要迁移的那个 1.x，不要以为找错了。**
-反之，如果 2.0 已经装过，你会看到 `starwatt` 容器/目录。
+> 只有下面两种情况才停下来问人：
+> 1. 输出与本文档写的**预期不符**；
+> 2. 遇到本文档**没有覆盖**的情况。
+>
+> 其余情况按文档执行，每个阶段结束贴出报告。
 
 ---
 
-## 给执行者的说明（Agent 先读这一段）
+## §0 执行契约（先读，全文适用）
 
-**你的任务**：按阶段推进，每阶段结束向人报告；**不确定就停下来问**，不要自己发挥。
+### 0.1 你的任务
 
-**三条红线（任何阶段都不得违反）**
+把这台服务器上的 **StarWatt 1.x** 升级为 **2.0.1**，**历史数据一条不丢**。
 
-1. **不要删除或覆盖 `records.db`**（那是历史数据）。可以复制、可以备份、可以只读打开，
-   但不能删、不能覆盖、不能 `rm -rf` 它所在的目录。
-2. **不要覆盖已有的 `.env`**。里面的 `FLASK_SECRET_KEY` 同时用于加密配置中心里的
-   凭据（openid / 飞书 / QQ 密钥）。它一变，那些**密文永久解不开**，只能重新填一遍。
-3. **不要停掉旧服务，直到阶段 3 的验收全部通过**。全程用副本、用另一个端口旁路验证。
+### 0.2 三条红线（任何阶段、任何理由都不得违反）
 
-**其他纪律**
-
-* 阶段 0（侦察）**只读**，不改任何东西、不装任何东西。
-* 每个命令都写清楚「预期看到什么」。**输出与预期不符就停下来报告**，不要继续往下走。
-* 如果你发现本文档与服务器实际情况不一致（例如根本没有 `records.db`），
-  **停下来报告**，不要猜测、不要编造路径。
-* 报告用阶段末尾的模板。**贴原始输出**，不要只写「已完成」。
-
-**环境**：amd64 / Linux。Docker 与裸机两条路线，阶段 0 会判定走哪条。
-
----
-
-## 阶段 0：侦察（**只读**，不改任何东西）
-
-目标：搞清楚「现在跑的是什么、数据在哪、怎么起的」。
-
-```bash
-# 0.1 旧服务在跑吗？怎么起的？
-docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' | head -20
-systemctl list-units --type=service --all 2>/dev/null | grep -iE 'dorm|starwatt|power' || echo "(无 systemd 服务)"
-ps aux | grep -iE 'dorm|starwatt|web\.py|gunicorn' | grep -v grep || echo "(无相关进程)"
-crontab -l 2>/dev/null | grep -iE 'dorm|starwatt|power' || echo "(无相关 crontab)"
-ss -lntp 2>/dev/null | grep -E ':5000|:5001' || echo "(5000/5001 端口没在监听)"
-```
-
-```bash
-# 0.2 数据库在哪？（最关键的一步）
-sudo find / -name 'records.db*' -not -path '*/node_modules/*' 2>/dev/null
-# 预期：1~2 个路径。典型位置：
-#   /var/lib/dorm-power-monitor/records.db     ← 裸机
-#   /opt/dorm-power-monitor/records.db         ← 裸机（旧版可能直接放代码目录）
-#   /var/lib/docker/volumes/*/_data/records.db ← Docker 命名卷
-#   ~/dorm-power-monitor/records.db            ← 手动 clone 跑
-```
-
-```bash
-# 0.3 每个库有多大、多少行、最后一次写入（**只读**）
-for db in <把 0.2 找到的路径列在这里>; do
-  echo "=== $db ==="
-  ls -lh "$db"
-  sudo sqlite3 "file:$db?mode=ro" \
-    "SELECT 'records', COUNT(*), MAX(ts) FROM records;
-     SELECT 'daily_elec', COUNT(*), MAX(dt) FROM daily_elec;" 2>&1
-done
-# 预期：records 有几千~几万行，MAX(ts) 是最近几小时/几分钟
-# ⚠️ 若 MAX(ts) 是几天前，说明旧服务其实早就没抓了 —— 记下来，报告里说明
-```
-
-```bash
-# 0.4 配置与密钥在哪
-sudo find / -name '.env' -path '*dorm*' -not -path '*/node_modules/*' 2>/dev/null
-sudo find / -name '.flask_secret_key' 2>/dev/null
-# 预期：一个 .env（含 DB_PATH / DORM_DATA_DIR / FLASK_PORT / FLASK_SECRET_KEY）
-#       Docker 用户可能没有 .env，密钥在卷里的 .flask_secret_key
-```
-
-**阶段 0 报告模板**
-
-```
-【阶段 0 · 侦察】
-部署方式：Docker / 裸机 / 其他（说明）
-旧服务：容器名/服务名/进程 = ____，启动方式 = ____
-数据库：路径 = ____，大小 = ____，records 行数 = ____，最后写入 = ____
-配置：.env 路径 = ____（或：无 .env，密钥在 ____）
-端口：5000 在监听？是/否
-可疑点：<例如「records 最后写入是 3 天前」「找到 2 个 records.db」>
-```
-
-> **如果有两个 `records.db`**：用「行数多 / 最后写入新」的那个，并在报告里说明另一个是什么。
-
-```bash
-# 0.5 一次收齐下面这些（都是只读，能让后面几个阶段少来回）
-echo "=== 服务怎么起的 ==="
-systemctl cat dorm-web 2>/dev/null || systemctl cat <0.1 找到的单元名>
-
-echo "=== 有没有 cron 在抓取（1.x 靠它）==="
-sudo crontab -l 2>/dev/null | grep -vE '^#' | grep -v '^$' || echo "(root 无 crontab)"
-sudo crontab -u www-data -l 2>/dev/null | grep -vE '^#' | grep -v '^$' || echo "(www-data 无 crontab)"
-
-echo "=== 应用目录里有什么（备份/venv/代码）==="
-ls -la /opt/dorm-power-monitor | head -30
-
-echo "=== .env 里有哪些键（**只看键名，不要贴值**）==="
-sudo grep -oE '^[A-Z_]+=' /opt/dorm-power-monitor/.env 2>/dev/null | tr -d '='
-
-echo "=== 现在跑的是哪个版本 ==="
-curl -fsS http://127.0.0.1:5000/healthz 2>/dev/null || echo "(没有 /healthz → 1.x 很可能没有这个端点，正常)"
-
-echo "=== nginx 反代到哪、域名是什么 ==="
-sudo grep -rnE 'proxy_pass|server_name' /etc/nginx/sites-enabled/ 2>/dev/null | head -20
-```
-
-**这些信息的用途**：`systemctl cat` 决定回滚命令；`crontab` 决定阶段 4 要清理什么
-（1.x 靠 cron 抓取，2.0 自带进程内调度器）；`.env` 的键名用来确认密钥放在哪一项；
-nginx 决定切换后从哪个域名验证。
-
-> 🔴 **`.env` 只报键名，不要把值贴进报告**（里面有 openid 与会话密钥）。
-
----
-
-## 阶段 1：备份（**动任何东西之前**）
-
-```bash
-STAMP=$(date +%F-%H%M%S)
-sudo mkdir -p /root/starwatt-backup-$STAMP
-
-# 1.1 数据库（连同 WAL 边车文件，否则最近的写入可能在副本里看不到）
-sudo cp -a <0.2 的 records.db>        /root/starwatt-backup-$STAMP/
-sudo cp -a <0.2 的 records.db>-wal    /root/starwatt-backup-$STAMP/ 2>/dev/null || true
-sudo cp -a <0.2 的 records.db>-shm    /root/starwatt-backup-$STAMP/ 2>/dev/null || true
-
-# 1.2 密钥（丢了就无法解密配置中心里的凭据）
-sudo cp -a <0.4 的 .env>              /root/starwatt-backup-$STAMP/ 2>/dev/null || true
-sudo cp -a <0.4 的 .flask_secret_key> /root/starwatt-backup-$STAMP/ 2>/dev/null || true
-
-sudo tar -czf /root/starwatt-backup-$STAMP.tar.gz -C /root starwatt-backup-$STAMP
-ls -lh /root/starwatt-backup-$STAMP.tar.gz
-```
-
-**1.3 必须验证备份能打开**（打不开的备份等于没备份）：
-
-```bash
-sudo tar -tzf /root/starwatt-backup-$STAMP.tar.gz | head
-sudo sqlite3 "file:/root/starwatt-backup-$STAMP/records.db?mode=ro" "SELECT COUNT(*) FROM records;"
-# 预期：行数与阶段 0 完全一致
-```
-
-**报告**：备份路径、大小、行数是否一致。**不一致就停下来。**
-
-> 🔴 把 `.tar.gz` 再拷一份到**另一台机器或对象存储**，然后才继续。
-> 做不到就在报告里说明，让人决定。
-
----
-
-## 阶段 2：数据库自检（回答「我这个库能不能直接用」）
-
-```bash
-cd /opt/dorm-power-monitor        # 或任何一份 2.0 代码目录；没有就先克隆：
-# git clone https://github.com/TSS-Small-sunshine/dorm-power-monitor.git && cd dorm-power-monitor
-
-python -m scripts.check_db <0.2 的 records.db> --fix
-```
-
-**三种结论与处置**
-
-| 输出 | 含义 | 怎么做 |
+| # | 红线 | 为什么 |
 |---|---|---|
-| `✅ 可以直接用`（可能带 ⚠ 缺列） | 结构与 2.0 兼容，缺的列启动时自动补 | **继续阶段 3** |
-| `❌ 认不出这是本项目的库` | 这个文件不是本项目的库 | 停下报告（可能找错文件了） |
-| `❌ 不是 SQLite 数据库（或已损坏）` | 文件坏了 | 用阶段 1 的备份恢复；备份也坏就停下报告 |
+| **R1** | **不得删除、覆盖、移动 `/opt/dorm-power-monitor/records.db`**。只允许：复制它、以只读方式打开它 | 那是全部历史数据 |
+| **R2** | **不得覆盖 `/opt/dorm-power-monitor/.env`** | 里面的 `FLASK_SECRET_KEY` 用于加密配置中心的凭据；换掉它，那些密文**永久解不开** |
+| **R3** | **阶段 3 验收全绿之前，不得停止/重启旧服务 `dorm-web.service`** | 旧服务是唯一在跑的东西，停了就没有可回退状态 |
 
-`--fix` 会在**副本**上试跑一遍升级并对比行数 —— 预期看到
-`schema_version：0 → 3`、`补上的列：users.disabled、users.must_change_password`、
-以及每张表 `✅ 行数不变`。
+### 0.3 行为准则
 
-**报告**：贴出 `check_db --fix` 的完整输出。
+1. **只读优先**：能用只读命令验证的，就不要写。
+2. **先备份再动手**：任何写操作之前，确认阶段 1 的备份存在且可打开。
+3. **不猜**：找不到文件、命令报错、输出与预期不符 → **停下来报告**，不要换一种做法试。
+4. **不扩大范围**：只做本文档写的操作。不要顺手升级系统、不要改 nginx 配置、
+   不要动其他服务。
+5. **不贴敏感值**：报告里**永远不要**贴 `.env` 的值、openid、密钥、密码明文。
+   需要证明时贴**键名**或 sha256 前缀即可。
+6. **每个命令都贴原始输出**（不要只写「已完成」）。
 
+### 0.4 每阶段必须报告什么
 
-## 阶段 3：旁路起新版（**旧服务完全不动**）
+固定四段：**① 做了什么（命令）② 看到了什么（原始输出）③ 与预期是否一致 ④ 结论/待决**。
+各阶段的报告模板见 [附录 E](#附录-e-报告模板汇总)。
 
-用**副本**、在**另一个端口**起一套新的，验收通过再谈切换。
+### 0.5 遇到这些情况必须停下来问人
 
-### 3.1 Docker 路线（推荐，隔离最干净）
+* 输出与本文档的「预期」不一致
+* 出现本文档没写的报错
+* 发现实际环境与 [§1.3 环境基线](#13-环境基线已侦察过的事实) 不符
+* 需要执行本文档之外的操作才能继续
+* 任何一步让你不确定「会不会动到数据」
+
+---
+
+## §1 项目与本次任务
+
+### 1.1 命名对照（**最容易搞混的一点**）
+
+同一个项目有两个名字，服务器上看到的是旧名字：
+
+| 你会看到 | 说明 |
+|---|---|
+| `dorm-power-monitor` | **1.x 时期的项目名**。目录 `/opt/dorm-power-monitor`、systemd 单元 `dorm-web.service`、`web.py` |
+| `StarWatt` / `星瓦` | **2.0 起的项目名**（本任务的目标） |
+| `starwatt` | 2.0 的 Python 包名（`import starwatt`）与容器镜像名 |
+| `starcore` | 2.0 的版本代号（版本号形如 `2.0.1-starcore`） |
+
+**结论：服务器上只有 `dorm-power-monitor`、完全没有 `starwatt`，这是正常的** ——
+`/opt/dorm-power-monitor` 就是要升级的那个 1.x。**不要以为找错了对象。**
+
+### 1.2 目标产物
+
+* 项目主页：https://github.com/TSS-Small-sunshine/dorm-power-monitor （公开仓库）
+* 目标版本：**2.0.1-starcore**
+* Docker 镜像：`ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore`
+* 离线包（镜像拉不动时用）：Release 页的 `starwatt-2.0.1-starcore-amd64.tar.gz`
+  https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
+* 自检工具（在仓库 `scripts/` 下，镜像里也带着）：
+  * `scripts/check_db.py` —— 数据库兼容性自检（**纯标准库**，宿主机 `python3` 可直接跑）
+  * `scripts/cutover_check.py` —— 切换验收自检（需要 `requests` → **在容器里跑**）
+
+### 1.3 环境基线（已侦察过的事实）
+
+这些是**已经查明的**，不要再重复侦察；发现与下面不符就报告。
+
+| 项 | 值 |
+|---|---|
+| 主机 | Ubuntu 24.04.2 LTS，`x86_64`（amd64） |
+| Docker | 已安装（29.4.3），**没有任何 starwatt 容器** |
+| 旧服务 | systemd 单元 `dorm-web.service`（enabled、active），用户 `www-data`，监听 `127.0.0.1:5000`，入口 `/opt/dorm-power-monitor/web.py` |
+| 旧应用目录 | `/opt/dorm-power-monitor`（含 `records.db`、`.env`、多份历史备份） |
+| 数据库 | `/opt/dorm-power-monitor/records.db`，**69632 字节** |
+| 配置文件 | `/opt/dorm-power-monitor/.env`，**730 字节** |
+| 反向代理 | nginx 占用 80/443，反代到后端 5000 |
+| 已完成 | **阶段 1 备份已完成**：`/opt/deploy/backup-20261009-165444`（权限 750，含 `records.db` 与 `env.bak`），sha256 双向一致，`PRAGMA integrity_check` = ok |
+| 工作目录约定 | 本机已用 `/opt/deploy/` 放备份 → 后续也用 `/opt/deploy/` 放测试实例 |
+
+### 1.4 已定决策（**不要再问**）
+
+| 决策项 | 结论 | 理由 |
+|---|---|---|
+| 迁移对象 | `/opt/dorm-power-monitor` 这个 1.x | §1.1 |
+| 部署形态 | **Docker**（不是裸机 venv+systemd） | 镜像预编译（不必装 Node/编译器）；回滚最干净（旧 systemd 单元原封不动）；本机 Docker 已装 |
+| 影子实例端口 | **5001**（只监听回环） | 不碰 nginx、不碰旧服务 |
+| 正式实例端口 | **沿用 5000** | nginx 的 `proxy_pass` **一行都不用改** |
+| 数据布局 | **把库复制到 `/var/lib/dorm-power-monitor/`**，不要 chown 旧目录去复用 | 旧 `records.db` 全程一个字节不动 → 回滚零风险（无权限问题、无「旧代码能否容忍新列」的疑问） |
+| 容器属主 | 数据目录必须 `chown 10001:10001` | 容器内是非 root（uid 10001），否则写不进去 |
+| 升级还是重装 | **升级**（重装只在 [附录 A](#附录-a-重装判据) 的三种情况） | 保留可回退状态 |
+| 执行脚本 | 用 `bash`（`sh` 不支持 `pipefail`） | 本机 `sh` 是 dash |
+
+### 1.5 当前进度
+
+| 阶段 | 状态 |
+|---|---|
+| Phase 0 侦察 | ✅ 完成（见 §1.3） |
+| Phase 1 备份 | ✅ 完成（`/opt/deploy/backup-20261009-165444`） |
+| Phase 2 数据库自检 | ⬜ 待执行（见 §3） |
+| Phase 3 旁路起新版 | ⬜ 待执行（见 §4） |
+| Phase 4 正式切换 | ⬜ 待执行（见 §5） |
+| Phase 5 回滚演练 | ⬜ 待执行（见 §6） |
+| Phase 6 交接报告 | ⬜ 待执行（见 §7） |
+
+**下一步**：执行 Phase 2（§3）。它会给出**行数基线** —— 后续每一步都要拿它对账。
+
+---
+
+## §2 Phase 0：侦察（只读）
+
+### 2.1 已完成部分
+
+见 §1.3 环境基线。**不要重复执行**，除非发现与基线不符。
+
+### 2.2 仍需补收的只读信息（**Phase 4 需要，请补做**）
 
 ```bash
-sudo mkdir -p /tmp/starwatt-test
-sudo cp -a <0.2 的 records.db> /tmp/starwatt-test/records.db
-sudo chown -R 10001:10001 /tmp/starwatt-test      # 容器内是非 root(10001)，属主不对会写不进去
+bash -c '
+echo "=== 1) 旧服务怎么起的（决定回滚命令）==="
+systemctl cat dorm-web 2>/dev/null | head -40
 
-docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
-# ⚠️ 如果拉不动（国内访问 ghcr.io 经常慢/超时），走下面的「离线包」路线
+echo "=== 2) 有没有 cron 在抓取（1.x 靠它，2.0 不需要 → Phase 4 要清理）==="
+sudo crontab -l 2>/dev/null | grep -vE "^\s*#|^\s*$" || echo "(root 无 crontab)"
+sudo crontab -u www-data -l 2>/dev/null | grep -vE "^\s*#|^\s*$" || echo "(www-data 无 crontab)"
 
-docker run -d --name starwatt-test \
+echo "=== 3) 数据库行数与最后写入（★最重要：这是「数据没丢」的基线）==="
+sudo sqlite3 "file:/opt/dorm-power-monitor/records.db?mode=ro" \
+  "SELECT COUNT(*), MIN(ts), MAX(ts) FROM records;
+   SELECT COUNT(*) FROM daily_elec;
+   SELECT COUNT(*) FROM users;"
+
+echo "=== 4) nginx 反代与域名（决定切换后从哪个域名验证）==="
+sudo grep -rnE "proxy_pass|server_name" /etc/nginx/sites-enabled/ 2>/dev/null | head -20
+
+echo "=== 5) .env 的键名（★只要键名，不要值）==="
+sudo grep -oE "^[A-Z_]+=" /opt/dorm-power-monitor/.env 2>/dev/null | tr -d "="
+
+echo "=== 6) 应用目录结构（venv / 备份 / 代码）==="
+sudo ls -la /opt/dorm-power-monitor | head -30
+'
+```
+
+**报告**：贴原始输出（**`.env` 只贴键名**）。
+
+**怎么算合格**：第 3 项必须给出 `records` 的具体行数与 `MAX(ts)`。
+若 `MAX(ts)` 距现在超过 1 小时，说明旧服务其实没在正常抓取 —— 报告里注明。
+
+---
+
+## §3 Phase 2：数据库自检（不改原库）
+
+**目的**：在动任何东西之前，确认这个库能不能被 2.0 直接用。
+
+### 3.1 取一份 2.0 源码（只为拿自检工具，不安装依赖）
+
+```bash
+bash -c '
+sudo mkdir -p /opt/deploy/starwatt-2.0
+cd /opt/deploy/starwatt-2.0
+sudo git clone --depth 1 https://github.com/TSS-Small-sunshine/dorm-power-monitor.git .
+ls scripts/
+'
+```
+
+**预期**：`scripts/` 里有 `check_db.py`、`cutover_check.py`、`ast_guard.py`、`secret_scan.py`。
+
+> 如果 `github.com` 拉不动（国内常见），换加速前缀：
+> `sudo git clone --depth 1 https://gh-proxy.com/https://github.com/TSS-Small-sunshine/dorm-power-monitor.git .`
+
+### 3.2 跑自检
+
+```bash
+cd /opt/deploy/starwatt-2.0
+python3 -m scripts.check_db /opt/dorm-power-monitor/records.db --fix
+```
+
+**说明**：`check_db` 只用 Python 标准库，宿主机 `python3` 直接能跑。
+`--fix` 会在**副本**上真跑一遍升级并对比行数 —— **原库不会被修改**。
+
+**预期输出**（关键行）：
+
+```
+schema_version：0（老库（没有 schema_version 记录：v1 基线或更早））
+  ✅ records        N 行
+  ⚠  users                        缺列 disabled, must_change_password
+结论：✅ 可以直接用。启动时 init() 会自动补齐，**不动你的数据**
+----------------------------------------------
+在副本上跑了一遍 init()（原库未改动）
+  schema_version：0 → 3
+  补上的列：users.disabled、users.must_change_password
+  行数对比（升级前 → 升级后）：
+    ✅ records      N → N
+结论：✅ 副本升级干净 —— 数据一行不少、结构已与当前代码一致。
+```
+
+### 3.3 判定规则
+
+| 输出 | 含义 | 动作 |
+|---|---|---|
+| `✅ 可以直接用` + `副本升级干净` | 库与 2.0 兼容 | **继续 Phase 3** |
+| `❌ 认不出这是本项目的库` | 文件不是本项目的库 | **停下报告**（可能找错文件） |
+| `❌ 不是 SQLite 数据库（或已损坏）` | 文件坏了 | **停下报告**（用阶段 1 备份评估恢复） |
+| 行数对比里出现 `❌` | 升级过程丢了行 | **停下报告**，不要继续 |
+
+### 3.4 阶段报告
+
+```
+【Phase 2 · 数据库自检】
+命令：python3 -m scripts.check_db /opt/dorm-power-monitor/records.db --fix
+原始输出：<整段粘贴>
+行数基线：records = ____ 行，daily_elec = ____ 行，users = ____ 行
+结论：可直接用 / 需要人工介入（说明）
+```
+
+> ⚠️ 这一步之后原库**仍是旧的**（`--fix` 只动副本），这是正常的 ——
+> 真正的升级发生在 Phase 3/4 启动新版本时。
+
+---
+
+
+## §4 Phase 3：旁路起新版（**旧服务全程不动**）
+
+**目的**：用**副本**、在**另一个端口**把 2.0 跑起来并验收。旧服务、旧库、nginx
+在这一阶段**完全不被触碰**。
+
+### 4.1 拉取镜像
+
+```bash
+sudo docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+```
+
+**拉不动时走离线包**（离线包不依赖任何外网）：
+
+```bash
+# 在能上网的机器下载（或让人传给你）：
+#   https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
+#   → starwatt-2.0.1-starcore-amd64.tar.gz
+sudo docker load -i starwatt-2.0.1-starcore-amd64.tar.gz
+sudo docker images | grep starwatt      # 确认镜像已导入
+```
+
+### 4.2 生成容器环境文件（**关键：必须沿用旧的密钥**）
+
+🔴 **这一步不做，配置中心里加密的凭据会永久解不开**（openid / 飞书 / QQ 密钥都是
+用旧 `FLASK_SECRET_KEY` 加密存进库里的）。容器如果自己生成一把新密钥，
+那些密文就再也读不出来了。
+
+先生成一个可复用的脚本（它会自动从旧 `.env` 里找出密钥项并沿用）：
+
+```bash
+sudo tee /opt/deploy/starwatt-env.sh >/dev/null <<'SH'
+#!/usr/bin/env bash
+# 生成容器环境文件：路径指向容器内 /data，密钥沿用旧 .env 里那一项
+set -euo pipefail
+OUT="${1:?用法: starwatt-env.sh <输出文件>}"
+OLD_ENV=/opt/dorm-power-monitor/.env
+
+# 旧 .env 里的键名可能不叫 FLASK_SECRET_KEY，所以先找它、再退化到「含 SECRET 或 KEY」
+SECRET="$(grep -E '^FLASK_SECRET_KEY=' "$OLD_ENV" | cut -d= -f2- || true)"
+if [ -z "$SECRET" ]; then
+  SECRET="$(grep -iE '^[A-Z_]*(SECRET|KEY)[A-Z_]*=' "$OLD_ENV" | head -1 | cut -d= -f2- || true)"
+fi
+if [ -z "$SECRET" ]; then
+  echo "!! 旧 .env 里找不到任何含 SECRET/KEY 的项 —— 请报告，不要自己造一个" >&2
+  exit 1
+fi
+
+cat > "$OUT" <<EOF
+DORM_DATA_DIR=/data
+DB_PATH=/data/records.db
+FLASK_PORT=5000
+GUNICORN_BIND=0.0.0.0:5000
+FLASK_SECRET_KEY=$SECRET
+EOF
+chmod 600 "$OUT"
+echo "已生成 $OUT（沿用旧密钥，权限 600，共 $(grep -c . "$OUT") 行）"
+SH
+sudo chmod +x /opt/deploy/starwatt-env.sh
+```
+
+### 4.3 影子数据目录（用副本，绝不用原库）
+
+```bash
+bash -c '
+sudo mkdir -p /opt/deploy/starwatt-test
+sudo cp -a /opt/dorm-power-monitor/records.db /opt/deploy/starwatt-test/records.db
+sudo chown -R 10001:10001 /opt/deploy/starwatt-test
+sudo ls -la /opt/deploy/starwatt-test
+
+# 生成影子实例的环境文件（沿用旧密钥）
+sudo /opt/deploy/starwatt-env.sh /opt/deploy/starwatt-test.env
+'
+```
+
+**预期**：`records.db` 属主 `10001`、大小 69632 字节（与基线一致）；
+环境文件生成成功且**不含任何明文打印**。
+
+### 4.4 起影子实例
+
+```bash
+sudo docker run -d --name starwatt-test \
   -p 127.0.0.1:5001:5000 \
-  -v /tmp/starwatt-test:/data \
+  -v /opt/deploy/starwatt-test:/data \
+  --env-file /opt/deploy/starwatt-test.env \
   ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
 
-sleep 5 && docker logs starwatt-test | tail -30
-# 预期：能看到迁移日志（migration: applying v1/v2/v3、schema_version 0 -> 3）、
-#       gunicorn 启动、调度器启动；没有 Traceback
+sleep 8
+sudo docker logs starwatt-test | tail -40
 ```
 
-**离线包路线**（拉不动 ghcr.io 时用；离线包不依赖任何外网）：
+**预期日志（关键行）**：
 
-```bash
-# 1) 在能上网的机器上下载（或让用户下载后传上来）：
-#    https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
-#    取 starwatt-2.0.1-starcore-amd64.tar.gz
-# 2) 传到服务器后导入：
-docker load -i starwatt-2.0.1-starcore-amd64.tar.gz
-docker run -d --name starwatt-test -p 127.0.0.1:5001:5000 \
-  -v /tmp/starwatt-test:/data \
-  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+```
+[entrypoint] 复用数据卷里的 FLASK_SECRET_KEY
+migration: applying v1 (baseline)
+migration: applying v2 (users.disabled)
+migration: applying v3 (users.must_change_password)
+migration: schema_version 0 -> 3
+Starting gunicorn ...
+Listening at: http://0.0.0.0:5000
+调度器已启动（pid=..，jobs=['l3_gate', 'scrape']）
 ```
 
-### 3.2 裸机路线
+> 第一行是「**复用**」而不是「已生成」—— 说明用的是你给的旧密钥 ✓。
+> 如果看到「已生成 FLASK_SECRET_KEY」，说明 `--env-file` 没生效，**停下来报告**。
+
+**如果旧 `.env` 里确实没有任何密钥项**（脚本会以 `!!` 退出）：
+报告，并预期**需要重新填一遍凭据**（openid / 飞书 / QQ）—— 因为旧代码可能是用
+硬编码默认密钥加密的，那种情况下谁都解不开。**历史数据本身不受影响**，
+只是配置中心里那几项要重填。这一步不要自己编一个密钥。
+
+**没有 Traceback** 才算通过。
+
+### 4.5 建一个能登录的管理员（**必须做**）
+
+1.x 的密码哈希是 bcrypt，2.0 换成 stdlib scrypt → **旧密码不再可用**：
 
 ```bash
-cd /opt/dorm-power-monitor          # 一份 2.0 代码（没有就先 git clone）
-python3 -m venv .venv-2.0 && .venv-2.0/bin/pip install -q -r requirements.txt
-FLASK_PORT=5001 \
-DB_PATH=/tmp/starwatt-test/records.db \
-DORM_DATA_DIR=/tmp/starwatt-test \
-  .venv-2.0/bin/gunicorn -c gunicorn.conf.py web:app
-# 前台跑着，另开一个终端做下面的验收；验收完 Ctrl-C 停掉
-```
-
-### 3.3 建一个能登录的管理员（**必须做**）
-
-旧版 1.x 的密码哈希是 bcrypt，2.0 换成了 stdlib scrypt —— **旧密码不再可用**，
-所以要新建一个管理员（这也是切换后你自己要做的第一件事）：
-
-```bash
-# Docker
-docker exec -i starwatt-test python - <<'PY'
+sudo docker exec -i starwatt-test python - <<'PY'
 from starwatt.db.connection import init
 from starwatt.auth import service as auth
 init()
 auth.create_user("admin2", "换成你的强密码Aa1!", role="admin")
-print("已创建 admin2")
+print("created admin2")
 PY
 ```
 
-> 密码要求：≥8 位且同时含**大写字母、数字、特殊字符**，否则会被拒绝并给出原因。
+**密码要求**：≥8 位且同时含**大写字母、数字、特殊字符**，否则会被拒绝并说明原因。
 
-### 3.4 验收（自动项）
+### 4.6 验收
 
-```bash
-python -m scripts.cutover_check \
-  --base http://127.0.0.1:5001 --user admin2 --password '你刚设的密码' \
-  --db /tmp/starwatt-test/records.db
-```
-
-**预期**：`结论：✅ N 项通过，0 项失败`，并且能看到**真实数字**（概览条数、
-电表电压电流、历史天数、违规条数、94 项配置、18 个开关、7×8 日志、`schema_version=3`）。
-
-**如果出现 ⚠️「历史/违规/缴费 暂时为空」**：这是**正常过渡态**，不是数据丢失 ——
-这几段按房间号过滤，而房间号由**成功的抓取**发布。等一个周期（或点首页「刷新」）即可。
-想确认库里确实有数据：
+**4.6.1 密钥正确性（最重要的一项）**
 
 ```bash
-sudo sqlite3 "file:/tmp/starwatt-test/records.db?mode=ro" \
-  "SELECT COUNT(*) FROM records; SELECT COUNT(*) FROM daily_elec;"
+sudo docker exec -i starwatt-test python - <<'PY'
+from starwatt.db.connection import init
+init()
+from starwatt import config_registry as cfg
+try:
+    v = cfg.get_str("dorm_openid", "")
+    print("✅ dorm_openid 解密成功，长度 =", len(v))
+except Exception as exc:
+    print("❌ dorm_openid 解密失败：", type(exc).__name__, exc)
+    print("   → 说明 FLASK_SECRET_KEY 与旧库不一致，请报告，不要继续")
+PY
 ```
 
-**报告**：贴出 `cutover_check` 的完整输出 + 上面两条 `COUNT(*)`。
-**有 ❌ 就停下来**，把输出发给人看。
+**预期**：`✅ dorm_openid 解密成功，长度 = N`（N > 0）。
+**如果报 ❌** → 停下来报告（继续下去会让用户丢掉所有凭据）。
+
+**4.6.2 自动验收**
+
+```bash
+sudo docker exec starwatt-test python -m scripts.cutover_check \
+  --base http://127.0.0.1:5000 \
+  --user admin2 --password '你刚设的密码' \
+  --db /data/records.db
+```
+
+> **为什么在容器里跑**：`cutover_check` 需要 `requests`，宿主机 `python3` 大概没装；
+> 镜像自带。容器内回环 `127.0.0.1:5000` 就是那个实例本身。
+
+**预期输出**：
+
+```
+结论：✅ N 项通过，0 项失败，M 项待观察
+```
+
+并且能看到**真实数字**：概览条数、电表电压/电流/功率、历史天数、违规条数、
+配置中心 `94 项 / 9 组`、功能开关 `18 个`、日志 `7 级 × 8 类`、`schema_version=3`。
+
+### 4.6 允许出现的「正常现象」（不是故障）
+
+| 现象 | 解释 |
+|---|---|
+| `⚠️ 历史/违规/缴费 暂时为空` | 这几段按房间号过滤，房间号来自 state 键 `last_room_id`，**由成功的抓取发布**；旧库没有这个键。点一次首页「刷新」或等一个周期即可。**不是数据丢失** |
+| `⚠️ 还没抓到过实时电表数据` | 同上（首次抓取成功后才有） |
+| 影子实例里配置中心凭据显示「解密失败」 | **要报告**：说明影子实例用的 `FLASK_SECRET_KEY` 与旧 `.env` 不同 |
+
+### 4.7 判定与报告
+
+**全部 ✅ / 仅上述正常现象** → 报告并**等人确认后**再进 Phase 4。
+
+```
+【Phase 3 · 旁路验收】
+镜像来源：ghcr.io 拉取 / 离线包导入
+容器状态：sudo docker ps --filter name=starwatt-test
+日志关键行：<migration 三行 + schema_version + gunicorn + 调度器>
+管理员：admin2 已创建（是/否）
+cutover_check 完整输出：<整段粘贴>
+行数对比：原库 ____ 行 / 影子库 ____ 行（应一致）
+结论：可以切换 / 有问题（说明）
+```
+
+> 🔴 **本阶段结束时不要删容器**。它要留到 Phase 4 之后。
 
 ---
 
-## 阶段 4：正式切换
+## §5 Phase 4：正式切换
 
-前提：阶段 3 全绿，且人已确认可以切换。
+**前置条件（缺一不可）**：Phase 3 全绿；人已明确说「可以切换」。
+
+### 5.1 停旧服务 + 清理 cron
 
 ```bash
-# 4.1 停旧的（Docker：docker stop <旧容器名>；裸机：sudo systemctl stop <旧服务名>）
-#     裸机还要处理 cron（旧版靠它抓取，2.0 不需要，留着会重复抓）
-crontab -l > /root/crontab-backup-$(date +%F).txt      # 先备份
-crontab -l | grep -v -iE 'dorm|starwatt|power' | crontab -   # 去掉相关行
+bash -c '
+# 备份 crontab（回滚要用）
+sudo crontab -l > /opt/deploy/crontab-root-backup-$(date +%F).txt 2>/dev/null || true
 
-# 4.2 起新的 —— 数据布局（**关键：旧文件一个字节都不动**）
-#
-#   把库**复制**到 2.0 的标准数据目录，而不是 chown 旧目录去复用：
-#     · 旧的 /opt/dorm-power-monitor/records.db 保持原样 → 回滚时旧服务起来就是原状态，
-#       连「旧代码能不能容忍多出来的 2 列」这个疑问都不存在了
-#     · 端口沿用 5000 → nginx 一行都不用改
+# 停旧服务
+sudo systemctl stop dorm-web
+sudo systemctl status dorm-web --no-pager | head -5     # 预期：inactive (dead)
+
+# 去掉与抓取相关的 cron（1.x 靠 cron，2.0 自带调度器，留着会重复抓）
+sudo crontab -l 2>/dev/null | grep -v -iE "dorm|starwatt|power" | sudo crontab - || true
+
+# 确认端口已释放
+ss -lntp | grep :5000 || echo "(5000 已释放)"
+'
+```
+
+### 5.2 准备正式数据目录（**旧库保持原样**）
+
+```bash
+bash -c '
 sudo mkdir -p /var/lib/dorm-power-monitor
-sudo cp -a <0.2 的 records.db> /var/lib/dorm-power-monitor/records.db
-sudo chown -R 10001:10001 /var/lib/dorm-power-monitor   # 容器内是非 root(10001)
+sudo cp -a /opt/dorm-power-monitor/records.db /var/lib/dorm-power-monitor/records.db
+sudo chown -R 10001:10001 /var/lib/dorm-power-monitor
+sudo ls -la /var/lib/dorm-power-monitor
 
-# Docker：用官方 compose（它会读 .env 里的 4 项；没有 .env 也有默认值）
-cd /opt/dorm-power-monitor && docker compose up -d
-# 裸机：保留 .env 与数据，只重建依赖/前端
-# sudo ./install.sh --upgrade
+# 生成正式实例的环境文件（沿用旧密钥）
+sudo /opt/deploy/starwatt-env.sh /opt/deploy/starwatt.env
+
+# 记录旧库的 sha256（切换后要核对它没被动过）
+sudo sha256sum /opt/dorm-power-monitor/records.db
+'
 ```
 
-> ⚠️ **不要删旧容器、旧代码目录、旧 systemd 单元、旧 `records.db`** —— 阶段 5 回滚要用它们。
+**为什么复制而不是复用旧目录**：旧 `records.db` 全程**一个字节都不动** →
+回滚时旧服务起来就是原状态，既没有权限问题，也没有「旧代码能否容忍新列」的疑问。
 
-**4.3 验证**（与阶段 3 相同的检查，换成正式地址）
+### 5.3 起正式实例
+
+🔴 **用 `docker run` 显式挂载，不要用 `docker compose up`。**
+仓库里的 compose 默认用**命名卷** `starwatt-data`，那样你复制到
+`/var/lib/dorm-power-monitor` 的库**不会被使用**，新实例会是一个**空库**
+（看起来就像「历史数据全丢了」）。显式 `-v` 才指向正确的库。
 
 ```bash
+sudo docker run -d --name starwatt \
+  --restart unless-stopped \
+  -p 127.0.0.1:5000:5000 \
+  -v /var/lib/dorm-power-monitor:/data \
+  --env-file /opt/deploy/starwatt.env \
+  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+
+sleep 8
+sudo docker ps --filter name=starwatt
+sudo docker logs starwatt | tail -30
+```
+
+**参数说明（每条都必要）**
+
+| 参数 | 作用 |
+|---|---|
+| `--restart unless-stopped` | 开机/崩溃后自动起来（替代旧 systemd 的 `enabled`） |
+| `-p 127.0.0.1:5000:5000` | 沿用 5000 → **nginx 不用改** |
+| `-v /var/lib/dorm-power-monitor:/data` | 指向**你复制的那份库**（不是命名卷） |
+| `--env-file /opt/deploy/starwatt.env` | 带来**旧密钥**与容器内路径 |
+
+**预期**：容器 `Up`，日志里是 `复用数据卷里的 FLASK_SECRET_KEY` + migration 三行 +
+`schema_version 0 -> 3` + gunicorn + 调度器，**没有 Traceback**。
+
+### 5.4 验证
+
+```bash
+bash -c '
+echo "=== 1) 探活 ==="
 curl -fsS http://127.0.0.1:5000/healthz
-python -m scripts.cutover_check --base http://127.0.0.1:5000 \
-  --user admin2 --password '...' --db /var/lib/dorm-power-monitor/records.db
-```
 
-**4.4 数据没丢的最终确认**
+echo "=== 2) 密钥正确性（凭据能否解密）==="
+sudo docker exec -i starwatt python - <<PY
+from starwatt.db.connection import init
+init()
+from starwatt import config_registry as cfg
+try:
+    v = cfg.get_str("dorm_openid", "")
+    print("✅ dorm_openid 解密成功，长度 =", len(v))
+except Exception as exc:
+    print("❌ 解密失败：", type(exc).__name__, exc)
+PY
 
-```bash
+echo "=== 3) 自动验收 ==="
+sudo docker exec starwatt python -m scripts.cutover_check \
+  --base http://127.0.0.1:5000 --user admin2 --password "你的密码" \
+  --db /data/records.db
+
+echo "=== 4) 行数对账（应与 Phase 2 基线一致）==="
 sudo sqlite3 "file:/var/lib/dorm-power-monitor/records.db?mode=ro" \
   "SELECT COUNT(*), MIN(ts), MAX(ts) FROM records;"
-# 预期：与阶段 0 的行数一致（升级只会加列，不会删行）
 
-# 顺便确认旧库确实没被动过（sha256 应与阶段 1 备份一致）
+echo "=== 5) 旧库确实没被动过（sha256 应与 5.2 记录一致）==="
 sudo sha256sum /opt/dorm-power-monitor/records.db
+'
 ```
 
-**4.5 nginx 需要改吗**
+**判定**：第 1 项 200；第 2 项 ✅；第 3 项 `0 项失败`；第 4 项行数与基线一致；
+第 5 项 sha256 与 5.2 一致。**任何一项不符 → 停下报告。**
 
-**不需要** —— 新旧都监听 `127.0.0.1:5000`，nginx 的 `proxy_pass` 一行都不用动。
-切换后直接从域名访问验证即可。
+### 5.5 nginx 需要改吗
 
----
-
-## 阶段 5：回滚（**切换前先演练一次**）
+**不需要**。新旧都监听 `127.0.0.1:5000`，`proxy_pass` 一行都不用动。
+从域名访问验证即可：
 
 ```bash
-# Docker：停新的、把旧的按原样起回来（旧容器还在）
-docker stop <新容器>
-docker start <旧容器>          # 或 docker compose -f <旧 compose> up -d
-
-# 裸机
-sudo systemctl stop <新服务>
-sudo systemctl start <旧服务>
+curl -fsSI https://<你 nginx 配置里的 server_name>/ | head -3
 ```
 
-**数据不用动**，因为按 4.2 的布局，旧的 `/opt/dorm-power-monitor/records.db`
-**从头到尾没被碰过**（新版本用的是 `/var/lib/dorm-power-monitor/` 里的副本）。
-所以回滚就是「把旧服务起回来」，连「旧代码能不能容忍多出来的 2 列」这个疑问都不存在：
-
-```bash
-# Docker 路线
-docker stop starwatt                 # 停新的（容器名以实际为准）
-sudo systemctl start dorm-web        # 旧服务原样起回来，端口 5000 立刻恢复
-
-# 裸机路线
-sudo systemctl stop <新服务>
-sudo systemctl start <旧服务>
-```
-
-> 只有在**没有**按 4.2 走、而是直接 `chown` 复用旧目录的情况下，才需要先
-> `sudo chown -R www-data:www-data /opt/dorm-power-monitor` 再起旧服务
-> （容器内是 uid 10001，旧服务是 www-data）。推荐布局不会有这个问题。
-
-**报告**：回滚演练是否成功、`/healthz` 是否恢复、旧页面能不能打开。
-演练完再切回新版（`docker compose up -d` + `systemctl stop dorm-web`）。
-
----
-
-## 阶段 6：交接报告（最后贴给用户）
+### 5.6 阶段报告
 
 ```
-【切换完成报告】
-旧版本/新版本：____ → 2.0.1-starcore
-数据库：路径 ____，切换前 ____ 行，切换后 ____ 行（应一致）
-备份：/root/starwatt-backup-____.tar.gz（已另存一份：是/否）
+【Phase 4 · 正式切换】
+旧服务：已停止（systemctl status 显示 inactive）
+cron：已清理（备份在 /opt/deploy/crontab-root-backup-____.txt）
+正式数据目录：/var/lib/dorm-power-monitor（属主 10001）
+容器：docker compose ps 输出
 自检：cutover_check 结论 = ____ 项通过 / ____ 项失败
-新管理员：admin2（首登是否要求改密：是/否）
-仍需人工确认：
-  □ 飞书私聊 9 个命令都有回复
-  □ 群里收到卡片
-  □ 等一个抓取周期后首页「最后更新」时间会变
-  □ 旧容器/旧目录仍保留（未删）
+行数对账：基线 ____ 行 → 现在 ____ 行（应一致）
+旧库 sha256：____（与 5.2 记录一致：是/否）
+域名访问：HTTP ____
+结论：切换成功 / 需要回滚（说明）
+```
+
+> 🔴 切换后**不要删**：旧容器（若有）、`/opt/dorm-power-monitor` 目录、
+> `dorm-web.service` 单元、旧 `records.db`。Phase 5 回滚要用。
+
+---
+
+
+## §6 Phase 5：回滚演练（**Phase 4 成功之后立刻做**）
+
+**为什么放在切换之后**：切换前旧服务本来就在跑，演练没有意义。切换后立刻
+真做一次「停新 → 起旧 → 验证 → 再切回新」，才能证明**回滚路径真的可用** ——
+这是唯一能验证它的时机，而且代价只有几十秒。
+
+### 6.1 演练步骤
+
+```bash
+bash -c '
+echo "=== 1) 停新实例 ==="
+sudo docker stop starwatt
+
+echo "=== 2) 起旧服务（原样回来）==="
+sudo systemctl start dorm-web
+sleep 5
+sudo systemctl status dorm-web --no-pager | head -5
+
+echo "=== 3) 验证旧服务可用 ==="
+curl -fsS -o /dev/null -w "旧服务 HTTP %{http_code}\n" http://127.0.0.1:5000/
+
+echo "=== 4) 确认旧库仍是原样（sha256 应与 5.2 一致）==="
+sudo sha256sum /opt/dorm-power-monitor/records.db
+'
+```
+
+**预期**：旧服务 `active`、HTTP 200、sha256 与 5.2 记录一致。
+
+### 6.2 切回新版
+
+```bash
+bash -c '
+sudo systemctl stop dorm-web
+sudo docker start starwatt          # 容器与参数都还在，直接启动
+sleep 8
+curl -fsS http://127.0.0.1:5000/healthz
+'
+```
+
+**预期**：新实例恢复、`/healthz` 200。
+
+### 6.3 如果演练中旧服务起不来
+
+* **不要继续**。保持新版在跑（它至少是好的），把现象报告给人。
+* 旧服务起不来的常见原因：cron 被清了但旧代码依赖它（不影响服务本身）、
+  venv 损坏、端口被占。**报告现象，不要自行修复旧环境。**
+* 数据没有风险：旧库 sha256 不变（§6.1 第 4 步可证）。
+
+### 6.4 阶段报告
+
+```
+【Phase 5 · 回滚演练】
+停新 → 起旧：旧服务状态 = active / 失败（说明）
+旧服务 HTTP：____
+旧库 sha256：____（与 5.2 一致：是/否）
+切回新版：/healthz = ____
+演练结论：回滚路径可用 / 不可用（说明）
+```
+
+---
+
+## §7 Phase 6：交接报告（最终，贴给人）
+
+```bash
+bash -c '
+echo "=== 最终状态 ==="
+sudo docker ps --filter name=starwatt --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+sudo systemctl is-active dorm-web || true
+sudo sqlite3 "file:/var/lib/dorm-power-monitor/records.db?mode=ro" \
+  "SELECT COUNT(*) FROM records; SELECT COUNT(*) FROM users;"
+curl -fsS http://127.0.0.1:5000/healthz
+'
+```
+
+```
+【StarWatt 2.0 切换完成报告】
+版本：1.x（dorm-power-monitor）→ 2.0.1-starcore
+部署形态：Docker（容器名 starwatt，端口 5000）
+数据目录：/var/lib/dorm-power-monitor/records.db
+行数对账：切换前 ____ 行 → 切换后 ____ 行（一致：是/否）
+旧库保护：/opt/dorm-power-monitor/records.db sha256 = ____（未改动：是/否）
+备份：/opt/deploy/backup-20261009-165444（已另存一份：是/否）
+自检：cutover_check = ____ 项通过 / ____ 项失败
+回滚演练：可用 / 不可用
+旧环境保留：dorm-web.service 单元、/opt/dorm-power-monitor、旧 records.db 均未删除
+nginx：未改动（仍是 127.0.0.1:5000）
+
+★ 仍需人工确认（脚本无法代替，请人在浏览器/飞书里点）：
+  □ 用 admin2 登录，首登是否直接跳到改密页
+  □ 飞书私聊逐个发这 9 个命令，都有回复：
+    /状态 /剩余 /电表 /电表状态 /今日 /历史 /缴费 /违规 /帮助
+  □ 群里收到过一张卡片（或「配置中心 → 测试连通」成功）
+  □ 等一个抓取周期（默认 10 分钟）后，首页「最后更新」时间会变
+
 异常与遗留：____
 ```
 
 ---
 
-## 附录 A：什么时候才该「重装」
+## 附录 A：重装判据
 
-**默认答案是「不要重装」** —— 阶段 3/4 的升级路径已经足够，而且更安全
-（旧环境原封不动地留着，随时能回滚）。
+**默认答案是「不要重装」** —— 升级路径更安全（旧环境原封不动，随时能回滚）。
+只有下面三种情况才重装：
 
-只有下面这些情况才重装：
+1. 旧环境**无法确定**怎么起的（进程/服务/cron 都对不上，找不到启动脚本）
+2. 旧代码目录已被删，或依赖坏到修不了
+3. 系统盘要重做 / 换机器
 
-* 旧环境**无法确定**是怎么起的（进程/服务/cron 都对不上，找不到启动脚本）
-* 旧代码目录已被删、或依赖坏到修不了（`pip`/`venv` 全乱）
-* 系统盘要重做 / 换机器
-
-**重装也必须保住数据**（否则等于从零开始，历史全没）：
+**重装也必须保住数据**：
 
 ```bash
-# 1) 停掉旧的一切（容器 / systemd 服务 / crontab）
-# 2) 建数据目录，把备份里的库放进去
+bash -c '
+# 1) 停掉旧的一切（服务 / cron）
+sudo systemctl stop dorm-web 2>/dev/null || true
+sudo crontab -l 2>/dev/null | grep -v -iE "dorm|starwatt|power" | sudo crontab - || true
+
+# 2) 数据目录：把备份里的库放进去
 sudo mkdir -p /var/lib/dorm-power-monitor
-sudo cp -a /root/starwatt-backup-<STAMP>/records.db /var/lib/dorm-power-monitor/
-sudo chown -R 10001:10001 /var/lib/dorm-power-monitor     # Docker 跑的话必须这个属主
+sudo cp -a /opt/deploy/backup-20261009-165444/records.db /var/lib/dorm-power-monitor/
+sudo chown -R 10001:10001 /var/lib/dorm-power-monitor
 
-# 3) 恢复密钥 —— 🔴 必须用**原来那把** FLASK_SECRET_KEY
-#    （换了它，配置中心里加密的 openid / 飞书 / QQ 凭据就永久解不开）
-sudo cp -a /root/starwatt-backup-<STAMP>/.env /opt/dorm-power-monitor/.env
-#    或（Docker 卷方案）把 .flask_secret_key 放回数据目录：
-#    sudo cp -a /root/starwatt-backup-<STAMP>/.flask_secret_key /var/lib/dorm-power-monitor/
+# 3) 密钥：★必须用原来那把（换了它，加密凭据永久解不开）
+sudo cp -a /opt/deploy/backup-20261009-165444/env.bak /opt/deploy/starwatt-2.0/.env
+sudo chmod 600 /opt/deploy/starwatt-2.0/.env
 
-# 4) 用官方 compose 起新版
-cd /opt/dorm-power-monitor && docker compose up -d
-
-# 5) 建管理员 + 自检（同阶段 3.3 / 3.4）
+# 4) 起新版（用显式挂载，别用 compose 的命名卷）
+sudo docker run -d --name starwatt \
+  --restart unless-stopped \
+  -p 127.0.0.1:5000:5000 \
+  -v /var/lib/dorm-power-monitor:/data \
+  --env-file /opt/deploy/starwatt.env \
+  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+'
 ```
 
-**重装后必须做的两件事**：建新管理员、跑 `cutover_check` 确认旧数据都在。
+> 重装时也要先按 §4.2 生成 `starwatt.env`（它会把**备份里的旧密钥**带进来）。
+> 若旧 `.env` 已丢失，就用 §1.3 备份目录里的 `env.bak`：
+> `sudo cp -a /opt/deploy/backup-20261009-165444/env.bak /opt/dorm-power-monitor/.env`
+> 之后再跑生成脚本。
+
+**重装后必做**：建管理员（§4.4）、跑 `cutover_check`（§4.5）、核对行数（§5.4）。
 
 ---
 
-## 附录 B：常见错误对照
+## 附录 B：错误对照表
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 登录返回 **500**，日志有 `no such column: disabled` | 库结构没升级 | 用 2.0.1 及以上（`create_app()` 现在自己会迁移）；确认启动方式不是自己写的小脚本 |
-| 旧密码登不上 | 1.x 是 bcrypt、2.0 是 scrypt | 正常现象 → 按 3.3 建新管理员 |
-| 「历史/违规/缴费/电表」空，但概览有数据 | `last_room_id` 还没由抓取发布 | 点一次「刷新」或等一个周期（**不是数据丢失**） |
-| 容器起来但外部访问不到 | 绑到了 127.0.0.1 | 容器必须 `GUNICORN_BIND=0.0.0.0:5000`（官方 compose 已设） |
-| `Permission denied` 写 `/data` | 宿主目录属主不对 | `sudo chown -R 10001:10001 <数据目录>`；或改用命名卷 |
-| 首页空白 / 资源 404 | 前端产物没构建 | Docker 镜像里已内置；裸机 `cd frontend && npm ci && npm run build` |
-| 配置中心里凭据显示「解密失败」 | `FLASK_SECRET_KEY` 变了 | 把备份里的旧密钥放回去重启 |
-| 抓取一直失败 | openid 过期 / 内网地址被 SSRF 拦 | 「管理 → 配置中心 → 测试连通」看具体错误 |
-| 端口 5000 被占用 | 旧服务没停干净 | `ss -lntp \| grep :5000` 找出占用者 |
+| 登录返回 **500**，日志 `no such column: disabled` | 库结构没升级 | 确认用的是 **2.0.1** 镜像（`create_app()` 会自己迁移）；确认不是自己写脚本启动的 |
+| 旧密码登不上 | 1.x 用 bcrypt，2.0 用 scrypt | **正常现象** → 按 §4.4 建新管理员 |
+| 「历史/违规/缴费/电表」空但概览有数据 | `last_room_id` 尚未由抓取发布 | 点「刷新」或等一个周期（**不是数据丢失**） |
+| `Permission denied` 写 `/data` | 宿主目录属主不对 | `sudo chown -R 10001:10001 <数据目录>` |
+| 容器起来但外部访问不到 | 绑到了 127.0.0.1 | 需要 `-e GUNICORN_BIND=0.0.0.0:5000`（compose 已设） |
+| 首页空白 / 资源 404 | 前端产物没进镜像 | 用官方镜像；裸机则 `cd frontend && npm ci && npm run build` |
+| 配置中心凭据显示「解密失败」 | `FLASK_SECRET_KEY` 变了 | 用备份的 `env.bak` / `.flask_secret_key` 恢复后重启 |
+| 抓取一直失败 | openid 过期 / 内网被 SSRF 拦 | 「管理 → 配置中心 → 测试连通」看具体错误 |
+| 端口 5000 被占用 | 旧服务没停干净 | `ss -lntp \| grep :5000` 找占用者；`systemctl stop dorm-web` |
+| **新实例起来后历史数据是空的** | 用了 `docker compose up`（命名卷），没用 `-v` 挂载你复制的那份库 | 按 §5.3 用显式 `-v /var/lib/dorm-power-monitor:/data` 重建容器 |
+| 配置中心凭据显示「解密失败」 | 容器没拿到旧的 `FLASK_SECRET_KEY` | 确认 `--env-file` 生效（日志应为「**复用**数据卷里的 FLASK_SECRET_KEY」）；用 §4.6.1 检查 |
+| `python3 -m scripts.cutover_check` 报 `No module named requests` | 宿主机没装 requests | **在容器里跑**（§4.6.2 / §5.4） |
 
 ---
 
-## 附录 C：红线清单（贴给执行者反复确认）
+## 附录 C：红线清单（每阶段开始前默读一遍）
 
-1. ❌ **不删、不覆盖 `records.db`**（只能复制 / 只读打开）
-2. ❌ **不覆盖已有的 `.env`**（`FLASK_SECRET_KEY` 丢了 = 加密凭据永久解不开）
-3. ❌ **阶段 3 验收全绿之前，不停旧服务**
-4. ❌ **切换后不删旧容器 / 旧目录 / 旧 systemd 单元**（回滚要用）
-5. ❌ **不跳过阶段 1 的备份**，且备份必须验证能打开
-6. ❌ **不猜**：找不到文件、输出与预期不符、拿不准 —— 停下来报告
+1. ❌ **不删、不覆盖、不移动** `/opt/dorm-power-monitor/records.db`（只可复制 / 只读打开）
+2. ❌ **不覆盖** `/opt/dorm-power-monitor/.env`
+3. ❌ **Phase 3 全绿前不停旧服务** `dorm-web.service`
+4. ❌ **Phase 4 之后不删**旧容器 / `/opt/dorm-power-monitor` / `dorm-web.service` / 旧库
+5. ❌ **不跳过 Phase 1 备份**（已完成，勿删 `/opt/deploy/backup-20261009-165444`）
+6. ❌ **不贴敏感值**：`.env` 值、openid、密钥、密码
+7. ❌ **不猜**：输出不符 / 找不到文件 / 拿不准 → 停下来报告
 
 ---
+
+## 附录 D：命令速查
+
+```bash
+# 探活
+curl -fsS http://127.0.0.1:5000/healthz
+
+# 容器状态与日志
+sudo docker ps --filter name=starwatt --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+sudo docker logs starwatt | tail -40
+sudo docker logs starwatt-test | tail -40
+
+# 数据库（只读）
+sudo sqlite3 "file:/var/lib/dorm-power-monitor/records.db?mode=ro" \
+  "SELECT COUNT(*), MIN(ts), MAX(ts) FROM records;"
+
+# 文件指纹（证明没被动过）
+sudo sha256sum /opt/dorm-power-monitor/records.db
+
+# 服务
+sudo systemctl status dorm-web --no-pager
+sudo systemctl start dorm-web / stop dorm-web
+
+# 自检
+python3 -m scripts.check_db /opt/dorm-power-monitor/records.db --fix          # 宿主机
+sudo docker exec starwatt python -m scripts.cutover_check \
+  --base http://127.0.0.1:5000 --user admin2 --password '<密码>' --db /data/records.db
+
+# 容器生命周期（正式实例名 starwatt）
+sudo docker stop starwatt / start starwatt / restart starwatt
+sudo docker rm -f starwatt-test        # 仅在全部验收通过、且人确认后才删
+```
+
+---
+
+## 附录 E：报告模板汇总
+
+每阶段结束按这个格式贴（**贴原始输出，不要只写「已完成」**）：
+
+```
+【Phase N · <阶段名>】
+① 做了什么：<关键命令>
+② 看到了什么：<原始输出>
+③ 与预期是否一致：一致 / 不一致（差在哪）
+④ 结论 / 待决：<结论> 或 <需要人确认的问题>
+```
+
+各阶段的专用模板分别在：§2（Phase 0 补收）、§3.4、§4.7、§5.6、§6.4、§7。
+
+---
+
+**文档版本**：随 StarWatt 2.0.1-starcore 发布；如与服务器实际不符，以报告为准并停下来问人。
 
