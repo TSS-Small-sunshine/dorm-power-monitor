@@ -161,6 +161,9 @@ sudo mkdir -p /tmp/starwatt-test
 sudo cp -a <0.2 的 records.db> /tmp/starwatt-test/records.db
 sudo chown -R 10001:10001 /tmp/starwatt-test      # 容器内是非 root(10001)，属主不对会写不进去
 
+docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+# ⚠️ 如果拉不动（国内访问 ghcr.io 经常慢/超时），走下面的「离线包」路线
+
 docker run -d --name starwatt-test \
   -p 127.0.0.1:5001:5000 \
   -v /tmp/starwatt-test:/data \
@@ -169,6 +172,19 @@ docker run -d --name starwatt-test \
 sleep 5 && docker logs starwatt-test | tail -30
 # 预期：能看到迁移日志（migration: applying v1/v2/v3、schema_version 0 -> 3）、
 #       gunicorn 启动、调度器启动；没有 Traceback
+```
+
+**离线包路线**（拉不动 ghcr.io 时用；离线包不依赖任何外网）：
+
+```bash
+# 1) 在能上网的机器上下载（或让用户下载后传上来）：
+#    https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
+#    取 starwatt-2.0.1-starcore-amd64.tar.gz
+# 2) 传到服务器后导入：
+docker load -i starwatt-2.0.1-starcore-amd64.tar.gz
+docker run -d --name starwatt-test -p 127.0.0.1:5001:5000 \
+  -v /tmp/starwatt-test:/data \
+  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
 ```
 
 ### 3.2 裸机路线
