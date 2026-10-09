@@ -89,6 +89,21 @@ class TestDeployFiles:
         raw = (PROJ / name).read_bytes()
         assert b"\r\n" not in raw, f"{name} 里有 CRLF —— Linux 上会报 bad interpreter"
 
+    def test_dockerignore_does_not_exclude_the_scripts(self) -> None:
+        """``scripts/`` 必须在镜像里：文档让用户在容器里跑自检工具。
+
+        ``docker compose exec starwatt python -m scripts.cutover_check ...``
+        是 Docker 用户最自然的用法；``.dockerignore`` 里手滑加一条
+        ``scripts`` 就会让这条命令变成空。CI 的发布冒烟也会实际跑一次。
+        """
+        lines = [
+            line.strip()
+            for line in _read(DOCKERIGNORE).splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert not any(line in ("scripts", "scripts/", "scripts/*") for line in lines)
+        assert (PROJ / "scripts" / "cutover_check.py").is_file()
+
     def test_gitattributes_pins_lf_for_scripts(self) -> None:
         text = (PROJ / ".gitattributes").read_text(encoding="utf-8")
         assert "*.sh" in text and "eol=lf" in text
