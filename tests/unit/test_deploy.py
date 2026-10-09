@@ -448,6 +448,133 @@ class TestInstallScript:
 
 
 # ===========================================================================
+# 托管平台配置（Vercel / Netlify / EdgeOne / Fly / Render）
+# ===========================================================================
+V_PLATFORMS = {
+    "vercel": PROJ / "vercel.json",
+    "edgeone": PROJ / "edgeone.json",
+    "netlify": PROJ / "netlify.toml",
+    "fly": PROJ / "fly.toml",
+    "render": PROJ / "render.yaml",
+}
+
+
+class TestPlatformDeployConfigs:
+    """这些配置只有「部署到那家平台」时才会被执行 —— 本地跑不到，所以钉住契约。
+
+    共同的硬约束（写错任何一条都会表现为「页面白屏」或「后端不工作」）：
+      * 前端产物里资源引用带 `/static/` 前缀（vite 的 base 与 Flask 对齐），
+        所以静态托管上必须把 `/static/*` 映射回根目录
+      * SPA 兜底规则必须是**最后一条**，否则它会吃掉 /api 与静态资源
+      * 后端需要持久磁盘 + 常驻进程，所以「全功能」只能在支持容器与卷的平台上
+    """
+
+    def test_all_present(self) -> None:
+        for name, path in V_PLATFORMS.items():
+            assert path.is_file(), f"缺少 {name} 的配置：{path.name}"
+
+    # ---- JSON 平台：Vercel / EdgeOne ------------------------------------
+    @pytest.mark.parametrize("name", ["vercel", "edgeone"])
+    def test_json_platforms_parse_and_serve_static(self, name: str) -> None:
+        import json
+
+        data = json.loads(V_PLATFORMS[name].read_text(encoding="utf-8"))
+        assert data["outputDirectory"] == "static"
+        # 前端构建命令必须从仓库根跑（frontend/ 才是 npm 工程）
+        assert "frontend" in data["buildCommand"]
+        assert "frontend" in data["installCommand"]
+
+    @pytest.mark.parametrize("name", ["vercel", "edgeone"])
+    def test_json_platforms_map_static_prefix(self, name: str) -> None:
+        import json
+
+        rewrites = json.loads(V_PLATFORMS[name].read_text(encoding="utf-8"))["rewrites"]
+        static_rules = [r for r in rewrites if r["source"].startswith("/static/")]
+        assert static_rules, "缺少 /static/* 映射：JS/CSS/字体都会 404"
+        assert static_rules[0]["destination"].startswith("/:"), static_rules[0]
+
+    @pytest.mark.parametrize("name", ["vercel", "edgeone"])
+    def test_json_platforms_spa_fallback_is_last(self, name: str) -> None:
+        import json
+
+        rewrites = json.loads(V_PLATFORMS[name].read_text(encoding="utf-8"))["rewrites"]
+        assert rewrites[-1]["destination"] == "/index.html", "SPA 兜底必须放最后一条"
+
+    def test_vercel_proxies_the_api(self) -> None:
+        """Vercel 能把 /api 反代到外部后端 —— 浏览器只看到一个域名，Cookie 照常工作。"""
+        import json
+
+        rewrites = json.loads(V_PLATFORMS["vercel"].read_text(encoding="utf-8"))["rewrites"]
+        api = [r for r in rewrites if r["source"].startswith("/api/")]
+        assert api and api[0]["destination"].startswith("https://"), api
+
+    def test_edgeone_does_not_pretend_to_proxy(self) -> None:
+        """EdgeOne 的重写只对静态资源有效，**不能**反代外部后端。
+
+        所以它的配置里不该出现 /api 规则 —— 假装能反代会让用户以为配好了，
+        实际请求会打到静态站点上（404 或返回 index.html）。
+        想在这上面接后端得写 Cloud Function，见 docs/DEPLOY_PAAS.md。
+        """
+        import json
+
+        rewrites = json.loads(V_PLATFORMS["edgeone"].read_text(encoding="utf-8"))["rewrites"]
+        assert not [r for r in rewrites if r["source"].startswith("/api")], (
+            "EdgeOne 的 rewrites 不能反代外部后端"
+        )
+
+    # ---- TOML 平台：Netlify / Fly ---------------------------------------
+    def test_netlify_toml(self) -> None:
+        tomllib = pytest.importorskip("tomllib", reason="需要 Python 3.11+")
+        data = tomllib.loads(V_PLATFORMS["netlify"].read_text(encoding="utf-8"))
+        assert data["build"]["publish"] == "static"
+        assert "frontend" in data["build"]["command"]
+        redirects = data["redirects"]
+        assert redirects[-1]["to"] == "/index.html", "SPA 兜底必须放最后一条"
+        assert any(r["from"].startswith("/api/") for r in redirects), "缺少 /api 反代"
+        assert any(r["from"].startswith("/static/") for r in redirects), "缺少 /static 映射"
+
+    def test_fly_toml_keeps_the_scheduler_alive(self) -> None:
+        """⚠️ 调度器必须常驻：机器一停就不抓取、不发日报。
+
+        `auto_stop_machines = true`（Fly 的默认值）在没流量时会把机器停掉 ——
+        对普通网站没问题，对这个应用等于「静默失效」。
+        """
+        tomllib = pytest.importorskip("tomllib", reason="需要 Python 3.11+")
+        data = tomllib.loads(V_PLATFORMS["fly"].read_text(encoding="utf-8"))
+        assert data["http_service"]["auto_stop_machines"] is False
+        assert data["http_service"]["min_machines_running"] == 1
+        assert data["mounts"]["destination"] == "/data", "数据库必须有持久卷"
+        assert data["env"]["DORM_DATA_DIR"] == "/data"
+        assert data["http_service"]["checks"][0]["path"] == "/healthz"
+        # 容器里必须绑 0.0.0.0，否则平台转发与探活都进不来
+        assert data["env"]["GUNICORN_BIND"].startswith("0.0.0.0:")
+
+    # ---- YAML 平台：Render（PyYAML 不是项目依赖，用结构断言）-----------
+    def test_render_yaml(self) -> None:
+        text = V_PLATFORMS["render"].read_text(encoding="utf-8")
+        assert "runtime: docker" in text
+        assert "dockerfilePath: ./Dockerfile" in text
+        assert "healthCheckPath: /healthz" in text
+        assert "mountPath: /data" in text, "数据库必须有持久磁盘"
+        assert "plan: starter" in text, "Free 套餐不支持磁盘、且会休眠（休眠就不抓取）"
+        assert "GUNICORN_BIND" in text and "0.0.0.0:" in text
+        # Render 按 PORT(默认 10000) 转发与探活，容器要监听同一个端口
+        assert 'value: "10000"' in text
+
+    # ---- 所有平台共用：构建命令与产物目录 ------------------------------
+    def test_build_command_matches_vite_output(self) -> None:
+        """构建命令跑的是 frontend 的 npm script，产物落到 ../static。
+
+        这三处（package.json 的 build、vite 的 outDir、平台配置的
+        outputDirectory）任意一处漂移，平台就会部署一个空目录。
+        """
+        pkg = (PROJ / "frontend" / "package.json").read_text(encoding="utf-8")
+        vite = (PROJ / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+        assert '"build"' in pkg
+        assert "outDir: '../static'" in vite
+
+
+# ===========================================================================
 # .github/workflows/release.yml
 # ===========================================================================
 RELEASE = PROJ / ".github" / "workflows" / "release.yml"

@@ -21,6 +21,7 @@ PROJ = Path(__file__).resolve().parents[2]
 #: 面向使用者的四份文档（N7）+ 扩展指南（Q18）+ 贡献指南 + 切换验收（M7）
 REQUIRED_DOCS = {
     PROJ / "docs" / "DEPLOY.md": "部署指南",
+    PROJ / "docs" / "DEPLOY_PAAS.md": "托管平台部署指南",
     PROJ / "docs" / "CONFIG.md": "配置说明",
     PROJ / "docs" / "FAQ.md": "常见问题",
     PROJ / "docs" / "UPGRADE.md": "升级与回滚",

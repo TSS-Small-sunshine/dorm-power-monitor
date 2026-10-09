@@ -1,0 +1,72 @@
+# =============================================================================
+# Netlify —— 只托管**前端**（SPA 静态产物），后端仍在你自己机器上
+# =============================================================================
+# ⚠️ 为什么后端不能一起部署到 Netlify
+# ===================================
+# 这个应用需要三样 serverless 平台**都不提供**的东西：
+#
+#   1. **持久可写磁盘** —— SQLite 数据库（records.db）必须落在磁盘上；
+#      Netlify Functions 只有 /tmp，且每次调用/冷启动都是新的
+#   2. **常驻进程** —— 调度器要每 10 分钟抓一次、每天 9 点发日报；
+#      Functions 是「来请求才跑」，没有请求就什么都不发生
+#   3. **单实例** —— 调度器是进程内单例，多实例会重复抓取与重复推送
+#
+# 所以这里只做前端托管 + 把 /api 反代到你的后端。完整说明见
+# docs/DEPLOY_PAAS.md（含「想真正一键部署全功能该用哪家」）。
+#
+# 用之前：把 YOUR-BACKEND.example.com 换成你后端的公网 HTTPS 域名。
+# =============================================================================
+
+[build]
+  # 前端构建（产物落到 ../static，见 frontend/vite.config.ts）
+  base = "."
+  command = "npm --prefix frontend run build"
+  publish = "static"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# -----------------------------------------------------------------------------
+# 路由（**顺序很重要**，Netlify 按声明顺序匹配）
+# -----------------------------------------------------------------------------
+
+# 1) API 反代到你的后端。
+#    浏览器只看到 Netlify 这一个域名，所以会话 Cookie（SameSite=Lax）与 CSRF
+#    照常工作 —— 后端一行都不用改。
+[[redirects]]
+  from = "/api/*"
+  to = "https://YOUR-BACKEND.example.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/healthz"
+  to = "https://YOUR-BACKEND.example.com/healthz"
+  status = 200
+  force = true
+
+# 2) 前端产物里的资源引用带 /static/ 前缀（vite 的 base 与 Flask 对齐），
+#    静态托管上要映射回根目录，否则 JS/CSS/字体全 404。
+[[redirects]]
+  from = "/static/*"
+  to = "/:splat"
+  status = 200
+
+# 3) SPA 前端路由兜底：未命中任何文件时交给 index.html。必须放最后。
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# -----------------------------------------------------------------------------
+# 缓存
+# -----------------------------------------------------------------------------
+[[headers]]
+  for = "/static/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
