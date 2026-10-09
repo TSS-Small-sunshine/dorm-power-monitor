@@ -21,9 +21,14 @@ name: starwatt
 
 services:
   starwatt:
-    # 默认拉预编译镜像（armv7 也能用）；想用源码本地构建就取消注释 build
+    # 镜像从哪来：**两条路，按需自动选**
+    #   1. 本地没有这个镜像 → Compose 用下面的 build 现场构建（今天就能跑，
+    #      不需要等 registry 上有发布版）
+    #   2. 本地已有（或你 pull 过）→ 直接用，不重新构建
+    # 想强制用发布版、不要本地构建：`docker compose pull` 或删掉 build 那一行。
     image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.0-starcore}
-    # build: .
+    build:
+      context: .
     container_name: starwatt
 
     restart: unless-stopped

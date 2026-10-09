@@ -25,6 +25,13 @@ docker compose up -d
 docker compose logs starwatt | grep 初始密码
 ```
 
+> **镜像从哪来？** compose 里同时写了 `image:` 与 `build:`：
+> * 本地没有那个镜像 → **现场构建**（第一次约 3–8 分钟，需要能访问 npm / PyPI）
+> * 本地已有（或你 `docker compose pull` 过）→ 直接用，不重新构建
+>
+> 所以**在官方镜像发布之前，这条命令也能跑通**。想只看构建过程：
+> `docker compose build`；想强制用发布版：`docker compose pull`。
+
 打开 <http://127.0.0.1:5000>，用 `admin` + 上面的密码登录。
 
 **指定版本**：
