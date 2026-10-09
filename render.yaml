@@ -1,0 +1,44 @@
+# =============================================================================
+# Render Blueprint —— 全功能一键部署（含调度器与持久数据）
+# =============================================================================
+# 用法：Render 控制台 → New → Blueprint → 选这个仓库（它会自动读本文件）
+#
+# 为什么 Render 能、Vercel/Netlify/EdgeOne 不能
+# =============================================
+#   1. **持久磁盘**（disk 段）—— SQLite 落在 /data；注意 **Free 套餐不支持磁盘**
+#   2. **常驻实例** —— Render 的 Free 实例闲置会休眠，休眠 = 不抓取、不发日报，
+#      所以要用付费套餐（starter 起）
+#   3. **单实例** —— 不加 numInstances（进程内调度器是单例，多实例会重复推送）
+#
+# 不需要配 FLASK_SECRET_KEY：缺失时容器 entrypoint 会生成并写进
+# /data/.flask_secret_key（磁盘上），重启复用。
+# =============================================================================
+
+services:
+  - type: web
+    name: starwatt
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: singapore
+    # Free 套餐不支持持久磁盘，且闲置会休眠（休眠就不抓取了）—— 用 starter
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+    # 持久磁盘：数据库 + 会话密钥都在这儿
+    disk:
+      name: starwatt-data
+      mountPath: /data
+      sizeGB: 1
+
+    envVars:
+      - key: DORM_DATA_DIR
+        value: /data
+      - key: DB_PATH
+        value: /data/records.db
+      # ⚠️ Render 默认把 PORT 设成 10000 并按它转发与探活，
+      #    所以容器要监听同一个端口（gunicorn.conf.py 默认只绑 127.0.0.1）
+      - key: FLASK_PORT
+        value: "10000"
+      - key: GUNICORN_BIND
+        value: 0.0.0.0:10000

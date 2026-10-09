@@ -298,7 +298,7 @@ jobs:
 
           cp docker-compose.yml .env.example README.md install.sh "$DIR/"
           cp deploy/dorm-web.service "$DIR/deploy/"
-          for doc in DEPLOY FAQ CONFIG UPGRADE M7_CUTOVER; do
+          for doc in DEPLOY DEPLOY_PAAS FAQ CONFIG UPGRADE M7_CUTOVER; do
             [ -f "docs/$doc.md" ] && cp "docs/$doc.md" "$DIR/" || true
           done
 

@@ -7,8 +7,13 @@
 | [Docker](#一docker推荐) | 所有人（含 armv7 / 群晖 / 软路由） | Docker + Compose | ~2 分钟 |
 | [离线包](#二离线安装断网机器) | 拉镜像慢、机器不通外网 | Docker | ~3 分钟 |
 | [裸机脚本](#三裸机安装debianubuntu) | 想在宿主机上直接跑（amd64/arm64） | root + Python 3.10+ | ~5 分钟 |
+| [托管平台](DEPLOY_PAAS.md) | 想用 Fly.io / Render / Vercel / Netlify / EdgeOne | 见该文档 | — |
 
 装完都是同一个流程：**取初始密码 → 登录 → 被强制改密 → 走 OOBE 向导**。
+
+> **想一键部署到 Vercel / Netlify / EdgeOne？** 前端可以，后端不行 ——
+> 它需要常驻进程与持久磁盘。原因、能做什么、以及「全功能一键」该用哪家，
+> 都在 [DEPLOY_PAAS.md](DEPLOY_PAAS.md)。
 
 ---
 
