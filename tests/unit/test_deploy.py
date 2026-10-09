@@ -639,3 +639,14 @@ class TestReleaseWorkflow:
         source = _read(RELEASE)
         for item in ("docker-compose.yml", ".env.example", "install.sh", "deploy/dorm-web.service"):
             assert item in source, item
+
+    def test_standalone_image_survives_the_bundle_step(self) -> None:
+        """组装离线包时不能把独立的 amd64 包「搬走」。
+
+        踩过的坑：那一步原本用 `mv` 把 amd64 包挪进离线包，于是 Release 上
+        只剩一个产物，而 DEPLOY.md 与发布说明里写的是两个 —— 用户按文档找
+        文件会找不到。
+        """
+        source = _read(RELEASE)
+        assert 'cp "starwatt-$VERSION-amd64.tar.gz"' in source
+        assert 'mv "starwatt-$VERSION-amd64.tar.gz"' not in source
