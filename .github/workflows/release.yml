@@ -293,6 +293,12 @@ jobs:
           grep -qi 'id="app"' /tmp/index.html \
             || { echo "::error::首页不是 SPA —— 前端产物没进镜像？"; exit 1; }
 
+          # 自检工具必须真的在镜像里 —— 文档让用户在容器里跑它，
+          # 镜像里没有就等于那条命令是空的（.dockerignore 改错很容易发生）。
+          docker run --rm "$IMAGE:$VERSION" python -m scripts.cutover_check --help >/dev/null 2>&1 \
+            || { echo "::error::镜像里没有 scripts/cutover_check.py"; exit 1; }
+          echo "镜像内自检工具可用 ✓"
+
           docker rm -f starwatt-smoke
           docker volume rm starwatt-smoke
 
