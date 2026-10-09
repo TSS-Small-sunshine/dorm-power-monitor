@@ -27,6 +27,9 @@ const username = ref('')
 const password = ref('')
 const submitting = ref(false)
 
+/** 会话过期（被 401 踢回登录页时带 ``?expired=1``） */
+const expired = computed(() => route.query.expired === '1')
+
 const canSubmit = computed(() => username.value.trim() !== '' && password.value !== '')
 
 async function submit(): Promise<void> {
@@ -48,6 +51,14 @@ async function submit(): Promise<void> {
 <template>
   <AuthLayout title="登录" subtitle="用管理员或舍友账号登录">
     <form class="space-y-4" novalidate @submit.prevent="submit">
+      <p
+        v-if="expired"
+        class="rounded-control bg-warning/10 px-3 py-2 text-xs text-warning"
+        role="status"
+      >
+        登录状态已过期，请重新登录（原目标页面会在登录后自动打开）。
+      </p>
+
       <BaseField
         v-model="username"
         label="用户名"
@@ -71,6 +82,10 @@ async function submit(): Promise<void> {
       <BaseButton type="submit" block :loading="submitting" :disabled="!canSubmit">
         {{ submitting ? '登录中…' : '登录' }}
       </BaseButton>
+
+      <RouterLink to="/forgot" class="block text-center text-xs text-muted hover:text-content">
+        忘记密码？
+      </RouterLink>
     </form>
   </AuthLayout>
 </template>

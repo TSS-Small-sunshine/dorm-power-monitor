@@ -14,6 +14,29 @@
   </head>
   <body class="h-full bg-surface text-content antialiased">
     <div id="app" class="h-full"></div>
+    <!--
+      无 JS 降级（Q21：不再是无样式的裸页）。
+      这段用 Tailwind 类而不是内联 style —— index.html 在 tailwind.config.ts 的
+      content 里，所以这些类会被正常编译进产物，与全站共用同一套设计令牌。
+      典型场景：用户用 curl 打开首页，或浏览器禁用了 JS。
+    -->
+    <noscript>
+      <div class="mx-auto flex max-w-xl flex-col gap-3 p-6">
+        <h1 class="text-lg font-bold">星瓦 StarWatt</h1>
+        <p class="text-sm text-muted">
+          这个界面需要 JavaScript。请在支持 JS 的浏览器中打开，
+          或改用命令行访问接口：
+        </p>
+        <ul class="space-y-1 text-sm">
+          <li><code class="rounded bg-elevated px-1">curl -s localhost:5000/healthz</code> — 探活</li>
+          <li><code class="rounded bg-elevated px-1">curl -s localhost:5000/api/site</code> — 站点信息</li>
+          <li><code class="rounded bg-elevated px-1">curl -s localhost:5000/api/data</code> — 需要登录（401）</li>
+        </ul>
+        <p class="text-xs text-muted">
+          抓取与推送**不依赖浏览器**：服务起来后调度器就会按配置自动运行。
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
