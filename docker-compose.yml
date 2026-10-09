@@ -1,0 +1,76 @@
+# =============================================================================
+# StarWatt 星瓦 —— Docker Compose（Q3 的主路径）
+# =============================================================================
+# 快速开始
+# --------
+#   1. 建数据目录：        mkdir -p data
+#   2. 起服务：            docker compose up -d
+#   3. 看初始密码：        docker compose logs starwatt | grep 初始密码
+#   4. 打开：              http://127.0.0.1:5000
+#
+# 三点说明
+# --------
+# 1. **不用写 .env 也能跑**：下面所有变量都带默认值；有 `.env` 时
+#    Compose 会自动读取它做变量替换（这是 Compose 的内置行为，不需要 env_file）。
+# 2. **首次启动自动生成随机管理员密码**并打印一次（见 docker-entrypoint.sh）。
+# 3. **FLASK_SECRET_KEY 落在数据卷里**（/data/.flask_secret_key）——
+#    它同时用于加密配置中心里的 secret，丢了就无法解密，务必备份卷。
+# =============================================================================
+
+name: starwatt
+
+services:
+  starwatt:
+    # 默认拉预编译镜像（armv7 也能用）；想用源码本地构建就取消注释 build
+    image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.0-starcore}
+    # build: .
+    container_name: starwatt
+
+    restart: unless-stopped
+
+    environment:
+      # 留空 → 入口脚本生成并持久化到数据卷（见 docker-entrypoint.sh 的说明）
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-}
+      # 留空 → 首启生成随机密码并打印一次（Q19）
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      FLASK_PORT: ${FLASK_PORT:-5000}
+      # 容器内固定用 /data；宿主机上对应下面的卷
+      DORM_DATA_DIR: /data
+      DB_PATH: /data/records.db
+      # ⚠️ 必须 0.0.0.0：gunicorn.conf.py 默认绑 127.0.0.1，容器里那样外部访问不到
+      GUNICORN_BIND: 0.0.0.0:5000
+
+    # 默认只绑本机回环，前面挂 nginx / Caddy 再对外（想直接暴露改 BIND_ADDR=0.0.0.0）
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${FLASK_PORT:-5000}:5000"
+
+    volumes:
+      # 命名卷：Docker 会自动把镜像里 /data 的属主带过来，不必手动 chown。
+      # 想迁移现有数据库（零迁移）可改成绑定挂载，见 docs/DEPLOY.md：
+      #   - ./data:/data
+      - starwatt-data:/data
+
+    # --- 容器加固（Q17）------------------------------------------------------
+    # 根文件系统只读：应用只写 /data（卷）与 /tmp（tmpfs，见下）
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      # 探活端点不碰数据库、不碰网络（starwatt/web/blueprints/health.py）
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    # 单实例：调度器是进程内单例，起多个会重复抓取（与 workers=1 同一条理由）
+    deploy:
+      replicas: 1
+
+volumes:
+  starwatt-data:
