@@ -52,6 +52,20 @@
 
 ---
 
+## 🖼️ 界面预览
+
+三张图都来自**真实运行**的实例（不是设计稿）：
+
+| 登录 | 仪表盘 |
+|---|---|
+| ![登录页](docs/screenshots/01-login.png) | ![仪表盘](docs/screenshots/02-dashboard.png) |
+
+**管理后台 · 配置中心**（94 个配置项，逐项独立校验；🔒 表示加密存储的项）：
+
+![配置中心](docs/screenshots/03-admin-config.png)
+
+---
+
 ## 🚀 快速开始（开发）
 
 **前置**：Python ≥ 3.10、Node ≥ 20（前端）。Linux / macOS / Windows 都可以。
@@ -433,6 +447,18 @@ sudo systemctl start dorm-web
 
 ## 📚 文档索引
 
+**用起来**
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | 部署指南：Docker / 离线包 / 裸机 / nginx+HTTPS / 备份 / 上线清单 |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | 配置说明：两层配置模型、9 组 94 项、加密项、18 个开关、7×8 日志 |
+| [`docs/FAQ.md`](docs/FAQ.md) | 常见问题：忘记密码、抓不到数据、机器人不回复、迁移与备份 |
+| [`docs/UPGRADE.md`](docs/UPGRADE.md) | 升级与回滚（含 30 秒回滚演练） |
+| [`docs/EXTENDING.md`](docs/EXTENDING.md) | 六类扩展的分步 SOP（加配置项只改 1 个文件） |
+
+**设计与历史**
+
 | 文档 | 内容 |
 |---|---|
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | 需求与 23 个决策点（Q1–Q23） |
@@ -446,6 +472,8 @@ sudo systemctl start dorm-web
 ---
 
 ## 🤝 贡献
+
+完整流程见 [`CONTRIBUTING.md`](CONTRIBUTING.md)，要点：
 
 1. 先读 `docs/REWRITE_PLAN.md` 的分层规则 —— 它由 `scripts/ast_guard.py` 强制：
    `domain/` 禁止 IO、禁止跨模块引用私有符号、禁止裸用 `datetime.now()`
