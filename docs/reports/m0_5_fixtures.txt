@@ -1,0 +1,49 @@
+=== M0 FIXTURES SUMMARY (StarWatt) ===
+generated : 2026-10-07
+generator : tests/regression/generate_fixtures.py
+branch    : rewrite/r69
+
+--- 5 类 fixtures ---
+schema.json        2118 bytes   10 表 + 19 索引（表名/字段名/索引名冻结）
+algorithms.json    2084 bytes   _stats ×8 场景 / _compute_monthly_projection ×3 / calc_days_remaining ×8
+cards.json        24709 bytes   _build_card ×7 / _template_for_remain ×9 / _build_offline_card ×3
+api.json           1386 bytes   /api/data(24h,168h) + /api/live 的字段集
+behaviors.json     5306 bytes   隐性行为快照 + 死开关证据链 + TODO 待补清单
+
+--- 关键边界已固化 ---
+_template_for_remain : 0→red / 29.99→red / 30→orange / 79.99→orange / 80→blue
+                       / 199.99→blue / 200→green / 999→green / None→blue
+_is_offline          : none/empty/no_label/offline/unknown → True（缺行算离线）
+                       online/normal/comm_ok → False
+_stats.hourly_used   : 1h 间隔→0.5 / 30min 间隔→None（≥3500s 门槛）
+_stats.remain_increase: hourly_used → None（电量上升不算耗电）
+calc_days_remaining  : avg=0→None / remain=-1→0.0 / None→None
+db.insert            : 同秒两次插入 → 行数不变，值被 REPLACE（latest=43.0）
+_parse_school_url    : 6 个 URL（含 127.0.0.1 / 169.254.169.254 / file:// / 外域）
+                       → 全部只返回 [base_url, openid]（SSRF 或离线拦截）
+_discover_room       : <input id="roomNo"> → 解析成功；<span id="roomNo"> → None（已记录限制）
+
+--- 🔴 本次生成发现的死代码（L21）---
+DEAD  (8) : push_l1_enable / push_l2_enable / quiet_hours_start / quiet_hours_end
+            / push_receivers_l1 / push_receivers_l2 / push_receivers_report / push_receivers_alert
+ACTIVE(6) : push_daily_enable / push_weekly_enable / push_monthly_enable
+            / push_daily_time / push_weekly_time / push_monthly_time
+证据      : feishu_bot.py:2107 push_if_enabled() 零调用；
+            _should_push()/_in_quiet_hours() 只被它调用。
+
+--- TODO 待补（17 项，见 behaviors.json._TODO_not_yet_snapshotted）---
+A 数据采集 (4) : 节流间隔 / backfill 一次性 / eqprice 缓存条件 / stale 降级
+B 推送 (5)     : L1 跃迁 / L3 三套 cadence / 违规冷却 / stale 门槛 / L3-L2 去重
+C 机器人 (3)   : 9 命令输出 / 菜单映射 / 无凭据降级
+D 事件安全 (2) : AES 三路径 / v2 签名
+E 前端 (1)     : 30s 轮询 / 4 档范围 / 2h 离线窗口（非 Python）
+H OOBE (1)     : 双状态源 / 完成后不可入
+K 约定 (1)     : init() 幂等
+
+--- 覆盖度自评 ---
+已固化：阈值边界 / 判定逻辑 / 脱敏 / 解析 / 节流门控 / 推送策略 / 密码强度
+        / SSRF / 飞书文本工具 / 核心算法 / DB 语义 / API 字段集 / schema
+待补  ：需要 mock 或预置 DB 的路径（推送副作用、命令输出、加解密向量）
+估计覆盖：约 60%（骨架）→ 补完 TODO 后可达 90%+
+
+=== END ===

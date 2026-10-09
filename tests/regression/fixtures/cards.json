@@ -1,0 +1,933 @@
+{
+  "_build_card": {
+    "all_null": {
+      "card": {
+        "elements": [
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 — kW·h",
+            "tag": "plain_text"
+          },
+          "template": "blue",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "blue_zone": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **400.00** kW·h　·　已用 **50.0%**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "div",
+            "text": {
+              "content": "🕐 抄表时间：**2026-10-06 12:00:00**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 199.99 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "blue",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "green_zone": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **400.00** kW·h　·　已用 **50.0%**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "div",
+            "text": {
+              "content": "🕐 抄表时间：**2026-10-06 12:00:00**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 200.00 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "green",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "no_dt": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **200.00** kW·h　·　已用 **75.0%**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 50.00 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "orange",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "normal": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **112.34** kW·h　·　已用 **89.0%**　·　⚡ 单价：**¥0.500**/kW·h",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n5.00 kW·h",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n7.34 kW·h",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n100.00 kW·h",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n¥3.20",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "div",
+            "text": {
+              "content": "🕐 抄表时间：**2026-10-06 12:00:00**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 12.34 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "red",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "orange_zone": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **200.00** kW·h　·　已用 **60.0%**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "div",
+            "text": {
+              "content": "🕐 抄表时间：**2026-10-06 12:00:00**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 79.99 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "orange",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "red_zone": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "📊 累计用电 **100.00** kW·h　·　已用 **70.0%**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🎁 **免费电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💰 **充值电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "🔥 **已用电量**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              },
+              {
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "content": "💧 **剩余水费**\n—",
+                      "tag": "lark_md"
+                    }
+                  }
+                ],
+                "tag": "column",
+                "weight": 1,
+                "width": "weighted"
+              }
+            ],
+            "flex_mode": "stretch",
+            "tag": "column_set"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "div",
+            "text": {
+              "content": "🕐 抄表时间：**2026-10-06 12:00:00**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "剩余 29.99 kW·h",
+            "tag": "plain_text"
+          },
+          "template": "red",
+          "title": {
+            "content": "⚡ 6号楼-1-119",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    }
+  },
+  "_build_offline_card": {
+    "empty": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "🚨 电表状态：**—**\n📡 通讯状态：**—**\n⏸ 停机原因：**—**\n🕐 最后上报：**—**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "最后在线 —",
+            "tag": "plain_text"
+          },
+          "template": "red",
+          "title": {
+            "content": "⚠ 电表离线",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "missing_label": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "🚨 电表状态：**—**\n📡 通讯状态：**—**\n⏸ 停机原因：**—**\n🕐 最后上报：**—**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "最后在线 —",
+            "tag": "plain_text"
+          },
+          "template": "red",
+          "title": {
+            "content": "⚠ 电表离线",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    },
+    "offline": {
+      "card": {
+        "elements": [
+          {
+            "tag": "div",
+            "text": {
+              "content": "🚨 电表状态：**—**\n📡 通讯状态：**—**\n⏸ 停机原因：**—**\n🕐 最后上报：**—**",
+              "tag": "lark_md"
+            }
+          },
+          {
+            "elements": [
+              {
+                "content": "note-fixture",
+                "tag": "plain_text"
+              }
+            ],
+            "tag": "note"
+          }
+        ],
+        "header": {
+          "subtitle": {
+            "content": "最后在线 —",
+            "tag": "plain_text"
+          },
+          "template": "red",
+          "title": {
+            "content": "⚠ 电表离线",
+            "tag": "plain_text"
+          }
+        }
+      },
+      "msg_type": "interactive"
+    }
+  },
+  "_template_for_remain": {
+    "12.34": "red",
+    "199.99": "blue",
+    "200.0": "green",
+    "29.99": "red",
+    "50.0": "orange",
+    "79.99": "orange",
+    "None": "blue"
+  },
+  "_template_for_remain_boundaries": {
+    "0": "red",
+    "199.99": "blue",
+    "200": "green",
+    "29.99": "red",
+    "30": "orange",
+    "79.99": "orange",
+    "80": "blue",
+    "999": "green",
+    "None": "blue"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "buildCommand": "npm --prefix frontend run build",
+  "installCommand": "npm --prefix frontend ci",
+  "outputDirectory": "static",
+  "nodeVersion": "20.18.0",
+  "rewrites": [
+    {
+      "source": "/static/*",
+      "destination": "/:splat"
+    },
+    {
+      "source": "/*",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/static/assets/*",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/index.html",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+    }
+  ]
+}

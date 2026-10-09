@@ -1,0 +1,62 @@
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    /* emoji 用自带字体渲染，避免 Linux 上缺字变豆腐块 */
+    font-variant-emoji: emoji;
+  }
+
+  /* 键盘可达性（Q21 DoD：Tab 走一遍不用鼠标）—— 只在键盘聚焦时显示环 */
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-brand));
+    outline-offset: 2px;
+  }
+
+  /* 尊重系统「减少动态效果」 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* 卡片：全站唯一表面样式（避免每个页面各写一套圆角/阴影） */
+  .sw-card {
+    @apply rounded-card border border-border bg-elevated shadow-card;
+  }
+
+  /* 输入框：认证界面与配置中心共用 */
+  .sw-input {
+    @apply w-full rounded-control border border-border bg-elevated px-3 py-2
+           text-sm text-content placeholder:text-muted
+           focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .sw-label {
+    @apply mb-1.5 block text-sm font-medium text-content;
+  }
+
+  .sw-hint {
+    @apply mt-1 text-xs text-muted;
+  }
+
+  .sw-error {
+    @apply mt-1 text-xs text-danger;
+  }
+}

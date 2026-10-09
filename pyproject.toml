@@ -1,0 +1,53 @@
+[project]
+name = "starwatt"
+version = "2.0.0"
+description = "星瓦 · StarWatt —— 宿舍电量监控 / dorm power monitor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+keywords = ["dorm", "power", "electricity", "feishu", "self-hosted"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+]
+
+# NOTE: starwatt/cli.py is created in M2.  Kept commented out until then so
+# that `pip install -e .` does not fail on a missing entry point.
+# [project.scripts]
+# starwatt = "starwatt.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "tests/legacy", "frontend", "static", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C901"]
+ignore = ["E501"]                    # 行长由 line-length 管
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+# ⚠️ 必须显式声明 first-party，不要靠 ruff 自动推断。
+#
+# ruff 的 isort 按「本地是否存在同名模块」给导入分类，于是同一个文件、同一版
+# ruff，在**开发机**和 **CI** 上可能得出不同结论 —— 只要开发机上残留一个旧代码
+# 的目录（例如 legacy 留下的 `db/__pycache__/`：未跟踪、但目录确实存在），
+# `import db` 就会被判成 first-party，分组随之改变。
+#
+# 实际踩过：本地 `ruff check .` 全绿、CI 的 `ruff check .` 报 I001；排查半天
+# 才发现是「残留目录 + 过期 .ruff_cache」一起造成的假绿。钉死之后两边必然一致。
+[tool.ruff.lint.isort]
+known-first-party = ["starwatt"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+files = ["starwatt"]
+exclude = ["tests/legacy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration", "tests/regression"]
+addopts = "-q"

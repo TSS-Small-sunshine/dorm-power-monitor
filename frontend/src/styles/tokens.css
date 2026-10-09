@@ -1,0 +1,95 @@
+/**
+ * StarWatt 星瓦 · 设计令牌（M5 §5.2）
+ * ================================
+ *
+ * 三条规矩
+ * --------
+ *
+ * 1. **颜色只以「RGB 通道」形式存在**（`22 119 255`，不带 `rgb()`）——
+ *    Tailwind 的 `rgb(var(--x) / <alpha-value>)` 才能让 `bg-brand/10` 这类
+ *    透明度写法正常工作。写 `#1677ff` 会让 `/10` 直接失效。
+ * 2. **主题色可运行时覆盖**：`--color-brand` 是默认值，后端把
+ *    「配置中心 → 站点 → 主题色」(`theme_color`) 注进来时只需改这几个变量，
+ *    **不需要重新构建前端**（见 `src/theme.ts`）。
+ * 3. **深色模式挂在 `html.dark`**（Tailwind `darkMode: 'class'`），
+ *    不是 `prefers-color-scheme` —— 用户要能手动切换并记住选择。
+ *
+ * 4 个断点（≤767 / 768–1023 / 1024–1439 / ≥1440）定义在 `tailwind.config.ts`。
+ */
+
+:root {
+  /* ---- 品牌色（可被 theme_color 覆盖）---- */
+  --color-brand: 22 119 255; /* #1677ff —— 注册表默认值 */
+  --color-brand-soft: 232 240 254;
+
+  /* ---- 表面 / 文字（浅色）---- */
+  --color-surface: 247 248 250;
+  --color-elevated: 255 255 255;
+  --color-border: 226 229 235;
+  --color-content: 23 26 33;
+  --color-muted: 108 116 133;
+
+  /* ---- 语义色（L1/L2/L4 与表单校验共用）---- */
+  --color-success: 22 163 74;
+  --color-warning: 234 140 12;
+  --color-danger: 220 53 69;
+
+  /* ---- 圆角 / 阴影 / 间距 ---- */
+  --radius-card: 14px;
+  --radius-control: 9px;
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 6%), 0 6px 18px rgb(16 24 40 / 6%);
+  --space-gutter: 1.25rem;
+
+  /* ---- 字体（仓库自带，无公网依赖）----
+     ⚠️ 路径是 Flask 的静态前缀 + `static/fonts/`（构建产物也落在 static/），
+     不要改成相对路径 —— Vite 会把相对路径当成源码资产去打包。 */
+  --font-sans: MiSans, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-emoji: NotoEmoji, sans-serif;
+}
+
+html.dark {
+  --color-brand: 64 150 255;
+  --color-brand-soft: 24 39 66;
+
+  --color-surface: 17 19 24;
+  --color-elevated: 26 29 36;
+  --color-border: 45 49 59;
+  --color-content: 236 238 242;
+  --color-muted: 150 158 172;
+
+  --color-success: 56 178 106;
+  --color-warning: 240 168 60;
+  --color-danger: 240 96 108;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 32%);
+}
+
+/* 深浅两套都要好看（REQUIREMENTS §596）：表单控件跟随，避免白底黑字突兀 */
+:root {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+@font-face {
+  font-family: MiSans;
+  src: url('/static/fonts/MiSans-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: MiSans;
+  src: url('/static/fonts/MiSans-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: NotoEmoji;
+  src: url('/static/fonts/NotoEmoji-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}

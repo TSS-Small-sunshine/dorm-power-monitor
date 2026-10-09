@@ -1,0 +1,174 @@
+{
+  "_TODO_not_yet_snapshotted": [
+    "A: F2/F3/F5 节流间隔（需预置 meta 时间戳或 patch _is_due）",
+    "A: backfill 一次性（F1+F2+F5 全成功才置 backfill_done）",
+    "A: eqprice 缓存条件（仅非默认值才写回 meta）",
+    "A: 抓取失败降级为 stale（需 mock _fetch_data 抛异常）",
+    "B: L1 低电跃迁判定（需 mock _post_feishu + 预置 records）",
+    "B: L3 三套 cadence（_l3_due daily/weekly/monthly）",
+    "B: 违规 30min 冷却（_check_violation_alert）",
+    "B: stale 2h 门槛（_check_stale_scrape）",
+    "B: L3/L2 同分钟去重（skip_l2_top_of_hour）",
+    "C: 9 个 slash 命令输出（需预置 DB + mock 上传）",
+    "C: 菜单事件映射（MENU_KEYS）",
+    "C: 无凭据降级文案",
+    "D: AES 三条解密路径（decrypt_payload）",
+    "D: v2 HMAC 签名校验（_verify_lark_signature）",
+    "E: 前端契约（30s 轮询 / 4 档范围 / 2h 离线窗口）—— 非 Python，靠人工核对",
+    "H: OOBE 双状态源 + 完成后不可入",
+    "K: init() 幂等（重复调用无副作用）"
+  ],
+  "_discover_room": {
+    "missing": [
+      null,
+      null
+    ],
+    "normal": [
+      "uuid-1",
+      "6号楼-1-119"
+    ],
+    "reversed_attrs": [
+      "uuid-2",
+      "6号楼-2-220"
+    ],
+    "span_not_matched": [
+      "uuid-3",
+      null
+    ]
+  },
+  "_findings_dead_push_switches": {
+    "ACTIVE": [
+      "push_daily_enable  (read by dorm_power._l3_due)",
+      "push_weekly_enable (read by dorm_power._l3_due)",
+      "push_monthly_enable(read by dorm_power._l3_due)",
+      "push_daily_time    (read by dorm_power._read_push_time)",
+      "push_weekly_time   (read by dorm_power._read_push_time)",
+      "push_monthly_time  (read by dorm_power._read_push_time)"
+    ],
+    "DEAD": [
+      "push_l1_enable",
+      "push_l2_enable",
+      "quiet_hours_start",
+      "quiet_hours_end",
+      "push_receivers_l1",
+      "push_receivers_l2",
+      "push_receivers_report",
+      "push_receivers_alert"
+    ],
+    "_evidence": [
+      "feishu_bot.py:2107  def push_if_enabled(layer, card)  -> 0 call sites",
+      "feishu_bot.py:2113  _should_push(layer)  -> only called by push_if_enabled",
+      "feishu_bot.py:2116  _in_quiet_hours()    -> only called by push_if_enabled",
+      "web.py:2199/2205/2206  push_l1_enable / push_l2_enable written+returned but never read",
+      "push_receivers_l1/l2/report/alert  -> 0 call sites"
+    ],
+    "consequence": "重写时 Q16 不是『把现有开关搬到 UI』，而是**从零实现真正的开关体系**；L1/L2/违规/离线/stale 五条推送路径当前都绕过 enable 检查直接 _post_feishu。"
+  },
+  "_in_quiet_hours_frozen": false,
+  "_is_due_just_stamped_3600": false,
+  "_is_due_never_seen": true,
+  "_is_offline": {
+    "comm_ok": false,
+    "empty": true,
+    "no_label": true,
+    "none": true,
+    "normal": false,
+    "offline": true,
+    "online": false,
+    "unknown": true
+  },
+  "_is_top_of_hour_frozen_1200": true,
+  "_parse_history_args": {
+    "''": 24,
+    "'-5'": 24,
+    "'12'": 12,
+    "'720'": 720,
+    "'9999'": 24,
+    "'abc'": 24
+  },
+  "_parse_school_url": {
+    "file:///etc/passwd?openid=1": [
+      "base_url",
+      "openid"
+    ],
+    "http://127.0.0.1:6379/x?openid=1": [
+      "base_url",
+      "openid"
+    ],
+    "http://169.254.169.254/latest?openid=1": [
+      "base_url",
+      "openid"
+    ],
+    "http://evil.example.com/x?openid=1": [
+      "base_url",
+      "openid"
+    ],
+    "http://ybhqcz.fjny.edu.cn/x": [
+      "base_url",
+      "openid"
+    ],
+    "http://ybhqcz.fjny.edu.cn/x?openid=1": [
+      "base_url",
+      "openid"
+    ]
+  },
+  "_read_push_time": {
+    "default_used": [
+      9,
+      0
+    ],
+    "malformed_falls_back": [
+      8,
+      30
+    ]
+  },
+  "_safe_path": {
+    "empty": "/",
+    "no_qs": "/p",
+    "with_qs": "/p"
+  },
+  "_safe_room_tail": {
+    "''": "????",
+    "'12345'": "2345",
+    "'abcdef-1234'": "1234",
+    "'b3b8'": "b3b8"
+  },
+  "_should_push": {
+    "daily": true,
+    "l1": false,
+    "l2": true,
+    "monthly": true,
+    "weekly": true
+  },
+  "_strip_mention": {
+    "' /状态'": "/状态",
+    "'/状态'": "/状态",
+    "'@_bot_1   /电表'": "/电表",
+    "'@_user_1 /状态'": "/状态"
+  },
+  "_template_for_remain": {
+    "0": "red",
+    "199.99": "blue",
+    "200": "green",
+    "29.99": "red",
+    "30": "orange",
+    "79.99": "orange",
+    "80": "blue",
+    "999": "green",
+    "None": "blue"
+  },
+  "_validate_password_strength": {
+    "''": "password required",
+    "'Abcdefg1!'": null,
+    "'Abcdefg1'": "password must contain a special character",
+    "'abc'": "password must be at least 8 characters",
+    "'abcdefgh'": "password must contain an uppercase letter",
+    "'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'": "password must be 128 characters or less"
+  },
+  "db.insert_replace_semantics": {
+    "delta": 0,
+    "latest_remain": 43.0,
+    "rows_after_two_inserts": 6,
+    "rows_before": 6
+  }
+}
