@@ -243,6 +243,12 @@ def advance(
 
     Returns:
         :func:`state` 的载荷 + ``{"saved": {...}}``（本步保存结果）。
+
+    📌 **校验失败不前进**（``target`` 停在原地，HTTP 207）：
+    否则用户会带着「其实没保存成功」的值走到下一步 —— 错误提示留在上一步
+    看不见，而向导最后还会把整个流程标记成「已完成」。最典型的后果是
+    ``dorm_openid`` 从来没写进去，用户以为配好了、抓取却永远起不来。
+    后退不受影响（要允许用户回去改前面的步骤）。
     """
     from starwatt.services import admin_service
 
@@ -258,10 +264,12 @@ def advance(
 
     if direction == "prev":
         target = max(0, current - 1)
+    elif saved["errors"]:
+        target = current  # 校验失败：留在本步，等用户改完再来
     else:
         target = min(LAST_INDEX, current + 1)
 
-    if direction != "prev" and target == LAST_INDEX:
+    if direction != "prev" and not saved["errors"] and target == LAST_INDEX:
         # 走到最后一步 = 完成（B5：``/complete`` 合并进 ``advance``）
         set_state(STATE_OOBE_COMPLETED, True)
         logger.info("OOBE 完成（共 %d 步）", len(STEPS))

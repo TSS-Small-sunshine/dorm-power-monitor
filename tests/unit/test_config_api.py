@@ -433,6 +433,66 @@ class TestOobe:
         assert response.get_json()["saved"]["applied"] == []
         assert get_str("quiet_hours_start") != "01:00"
 
+    # -----------------------------------------------------------------------
+    # 校验失败必须能被看见（B5：错误留在本步，不许「假装前进」）
+    # -----------------------------------------------------------------------
+    def test_invalid_value_does_not_advance(self, admin_client) -> None:
+        """填了非法值 → 207 + **停在本步**，错误带中文原因。"""
+        admin_client.post("/api/oobe/advance", json={"direction": "next"})  # → school
+        response = admin_client.post(
+            "/api/oobe/advance",
+            json={"direction": "next", "values": {"dorm_base_url": "not-a-url"}},
+        )
+        assert response.status_code == 207
+        body = response.get_json()
+        assert body["saved"]["errors"], body["saved"]
+        assert body["current"]["key"] == "school"  # 没有前进
+        assert body["step"] == 1
+
+    def test_invalid_value_is_not_saved(self, admin_client) -> None:
+        admin_client.post("/api/oobe/advance", json={"direction": "next"})
+        admin_client.post(
+            "/api/oobe/advance",
+            json={"direction": "next", "values": {"dorm_base_url": "not-a-url"}},
+        )
+        assert get_str("dorm_base_url") != "not-a-url"
+
+    def test_cannot_complete_with_a_failing_step(self, admin_client) -> None:
+        """🔑 从倒数第二步前进时校验失败 → **不得**标记完成。
+
+        否则用户会以为配好了，而实际关键项根本没写进去 —— 抓取永远起不来，
+        界面上却没有任何异常。
+        """
+        for _ in range(3):  # 0→1→2→3（走到倒数第二步）
+            admin_client.post("/api/oobe/advance", json={"direction": "next", "skip": True})
+
+        before = admin_client.get("/api/oobe/state").get_json()
+        assert before["step"] == 3 and before["completed"] is False
+
+        response = admin_client.post(
+            "/api/oobe/advance",
+            # 这一步唯一的强校验项：feishu_app_id 必须 ≤ 64 字符
+            json={"direction": "next", "values": {"feishu_app_id": "x" * 100}},
+        )
+
+        assert response.status_code == 207
+        body = response.get_json()
+        assert body["step"] == 3  # 没前进
+        assert body["completed"] is False  # 也没被标记完成
+        assert body["saved"]["errors"]
+
+    def test_backward_still_works_after_an_error(self, admin_client) -> None:
+        """有错误时也要能后退（回去改前面的步骤）。"""
+        admin_client.post("/api/oobe/advance", json={"direction": "next"})  # → school
+        admin_client.post(
+            "/api/oobe/advance",
+            json={"direction": "next", "values": {"dorm_base_url": "not-a-url"}},
+        )
+        body = admin_client.post(
+            "/api/oobe/advance", json={"direction": "prev", "skip": True}
+        ).get_json()
+        assert body["step"] == 0
+
     def test_skip_does_not_save(self, admin_client) -> None:
         admin_client.post("/api/oobe/advance", json={"direction": "next"})
         response = admin_client.post(
