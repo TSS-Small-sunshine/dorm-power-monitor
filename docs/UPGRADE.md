@@ -2,6 +2,15 @@
 
 ## 一、升级前（每次都要做，一分钟）
 
+**第 0 件事：确认你的库能用**（不知道版本也没关系）：
+
+```bash
+python -m scripts.check_db /path/to/records.db --fix
+# 只读体检 + 在副本上试一遍升级；原库一个字节都不会动
+```
+
+然后备份数据与密钥：
+
 ```bash
 # 1. 备份数据 + 密钥（见 DEPLOY.md 第五节）
 #    Docker：

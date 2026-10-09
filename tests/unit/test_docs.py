@@ -18,12 +18,13 @@ import pytest
 
 PROJ = Path(__file__).resolve().parents[2]
 
-#: 面向使用者的四份文档（N7）+ 扩展指南（Q18）+ 贡献指南
+#: 面向使用者的四份文档（N7）+ 扩展指南（Q18）+ 贡献指南 + 切换验收（M7）
 REQUIRED_DOCS = {
     PROJ / "docs" / "DEPLOY.md": "部署指南",
     PROJ / "docs" / "CONFIG.md": "配置说明",
     PROJ / "docs" / "FAQ.md": "常见问题",
     PROJ / "docs" / "UPGRADE.md": "升级与回滚",
+    PROJ / "docs" / "M7_CUTOVER.md": "切换与验收指南",
     PROJ / "docs" / "EXTENDING.md": "扩展指南",
     PROJ / "CONTRIBUTING.md": "贡献指南",
 }
@@ -98,6 +99,27 @@ class TestExtendingGuide:
         for target in ("scripts/ast_guard.py", "tests/regression/fixtures/"):
             assert target in text, target
         assert (PROJ / "scripts" / "ast_guard.py").is_file()
+
+
+class TestDbCompatibilityTool:
+    """``scripts/check_db.py`` —— 「我这是哪一版」的答案，别让它从文档里消失。"""
+
+    def test_tool_exists(self) -> None:
+        assert (PROJ / "scripts" / "check_db.py").is_file()
+
+    @pytest.mark.parametrize("doc", ["FAQ.md", "DEPLOY.md", "UPGRADE.md", "M7_CUTOVER.md"])
+    def test_docs_tell_users_to_run_it(self, doc: str) -> None:
+        text = (PROJ / "docs" / doc).read_text(encoding="utf-8")
+        assert "scripts.check_db" in text, f"{doc} 没告诉用户跑自检工具"
+
+    def test_cutover_guide_starts_with_the_database(self) -> None:
+        """切换指南必须先解决「我的库能不能用」，这是用户最不确定的一步。"""
+        text = (PROJ / "docs" / "M7_CUTOVER.md").read_text(encoding="utf-8")
+        assert text.index("第 0 步") < text.index("第 1 步") < text.index("第 2 步")
+        assert "零迁移" in text and "回滚" in text
+        # 必须给出「旁路试跑 + 副本」这条安全路径
+        assert "副本" in text
+        assert "check_db" in text
 
 
 class TestRelativeLinks:
