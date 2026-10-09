@@ -337,7 +337,13 @@ class RunStatusRepo:
             coerce_str(data.get("dt")),
             coerce_str(data.get("runStatus") or data.get("run_status")),
             coerce_str(data.get("workStatus") or data.get("work_status")),
-            coerce_str(data.get("updateDt") or data.get("update_dt")),
+            # 📌 学校 F4 **只返回 ``dt``**（实测：``{"dt": "2026-10-09 17:59:02",
+            # ...}``），从不返回 ``updateDt``。不回退的话 ``update_dt`` 列恒为
+            # NULL，而电表页「最后上报」、飞书离线卡、``/dorm status`` 命令
+            # 读的都是这一列 —— 三处一起显示「—」。
+            coerce_str(
+                data.get("updateDt") or data.get("update_dt") or data.get("dt")
+            ),
             coerce_float(data.get("vol")),
             coerce_float(data.get("cur")),
             coerce_float(data.get("yggl")),

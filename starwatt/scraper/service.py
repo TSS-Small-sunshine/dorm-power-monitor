@@ -192,7 +192,8 @@ class ScrapeContext:
     def get(self, path: str, **kwargs: Any) -> Any:
         return self.client.get(self.url(path), **kwargs)
 
-    def post_form(self, path: str, data: dict[str, Any]) -> dict[str, Any]:
+    def post_form(self, path: str, data: dict[str, Any]) -> Any:
+        """POST 表单并返回 JSON（**对象或数组** —— F2 / F3 / F5 是数组）。"""
         return self.client.post_form(self.url(path), data)
 
     def url(self, path: str) -> str:

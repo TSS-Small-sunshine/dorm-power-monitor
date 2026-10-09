@@ -139,18 +139,27 @@ class SchoolClient:
         """GET 并返回响应文本。"""
         return self.request("GET", path, **kwargs).text
 
-    def post_form(self, path: str, data: dict[str, Any]) -> dict[str, Any]:
-        """POST 表单并返回 JSON（学校接口全部返回 JSON）。"""
+    def post_form(self, path: str, data: dict[str, Any]) -> Any:
+        """POST 表单并返回解析后的 JSON（**对象或数组**）。
+
+        📌 形状**不在这里判**：F1 / F4 返回对象（``{"status": 0, ...}``），
+        F2 / F3 / F5 返回**数组**（``[{...}, ...]``）—— 2026-10 用真实学校
+        响应实测确认。这里只负责「是不是合法 JSON」，容器形状交给
+        :func:`starwatt.scraper.endpoints.as_list` 与 ``check_status`` 处理，
+        与 legacy ``_as_list`` 的分工一致。
+
+        ⚠️ 这里曾经有一句 ``if not isinstance(payload, dict): raise``，
+        它让 F2 / F3 / F5 **永远失败**（``daily_elec`` / ``violations`` /
+        ``pay_history`` 三张表恒为空），而 ``run_once`` 因为 F1 成功仍然
+        报 ``ok=True`` —— 失败是静默的，只在日志里。
+        """
         result = self.request("POST", path, data=data)
         try:
-            payload = result.json()
+            return result.json()
         except ValueError as exc:
             raise ScrapeError(
                 f"{path} 返回的不是 JSON（前 120 字符：{result.text[:120]!r}）"
             ) from exc
-        if not isinstance(payload, dict):
-            raise ScrapeError(f"{path} 返回的 JSON 不是对象")
-        return payload
 
     # -- 内部 -------------------------------------------------------------
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:

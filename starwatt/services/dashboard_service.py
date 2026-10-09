@@ -309,7 +309,10 @@ def live(*, today: date | None = None) -> dict[str, Any]:
     room_id = coerce_str(get_str("last_room_id", ""))
     price = eqprice()
 
-    rows = RecordRepo.query(hours=DEFAULT_HOURS)
+    # 📌 用 **7 天窗口**而不是 24 小时：``stats.daily_avg`` 要求跨度 ≥ 1 天，
+    # 24 小时窗口里永远凑不满 → 概览「日均用量」卡恒显示「—」。
+    # 同一个坑 :func:`days_remaining` 已经修过（见那里的说明），这里补上。
+    rows = RecordRepo.query(hours=DAILY_AVG_HOURS)
     stat_payload = stats(rows)
     latest = rows[-1] if rows else None
 

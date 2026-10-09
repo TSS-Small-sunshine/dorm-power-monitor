@@ -358,10 +358,25 @@ class TestPostForm:
         with pytest.raises(cl.ScrapeError, match="不是 JSON"):
             client.post_form("/a", {})
 
-    def test_json_array_raises(self) -> None:
-        client, _ = _make([_FakeResponse(body=b"[1,2,3]")])
-        with pytest.raises(cl.ScrapeError, match="不是对象"):
-            client.post_form("/a", {})
+    def test_returns_list(self) -> None:
+        """F2 / F3 / F5 返回的是**数组** —— 必须原样透传。
+
+        📌 真实学校响应实测：``getEmDayElectQuery`` 返回
+        ``[{"dt":"2026-10-08","eebm":8245.35,...}, ...]``。
+
+        ⚠️ 这条测试以前是**反的**（``test_json_array_raises`` 断言数组必须
+        抛 ScrapeError）—— 那个断言让 F2 / F3 / F5 在生产里永远失败，
+        ``daily_elec`` / ``violations`` / ``pay_history`` 三张表恒为空。
+        形状归一化是 :func:`as_list` 的职责，客户端只判「是不是 JSON」。
+        """
+        client, _ = _make([_FakeResponse(body=b'[{"dt":"2026-10-08","eebm":8245.35}]')])
+        payload = client.post_form("/a", {})
+        assert isinstance(payload, list)
+        assert payload[0]["eebm"] == 8245.35
+
+    def test_list_payload_passes_status_check(self) -> None:
+        """数组响应没有 ``status`` 字段 —— 那不是失败，不能抛。"""
+        ep.check_status([{"dt": "2026-10-08", "eebm": 8245.35}], "/x")
 
 
 class TestSsrfNotRetried:
@@ -641,6 +656,30 @@ class TestPersist:
             [{"roomId": "room-1", "data": {"vol": 220.1, "runStatus": "在线"}}]
         )
         assert RunStatusRepo.get("room-1").run_status == "在线"
+
+    def test_f4_update_dt_falls_back_to_dt(self, tmp_db) -> None:
+        """学校 F4 **只返回 ``dt``** —— ``update_dt`` 必须回退到它。
+
+        否则 ``/api/live`` 里的 ``run_status.update_dt`` 恒为 ``None``，
+        电表页「最后上报」、飞书离线卡、``/dorm status`` 三处一起显示「—」。
+        """
+        from starwatt.db.repositories import RunStatusRepo
+
+        ep.F4RunStatus().persist(
+            [
+                {
+                    "roomId": "room-1",
+                    "data": {
+                        "dt": "2026-10-09 17:59:02",
+                        "runStatus": "通讯正常",
+                        "vol": 228.6,
+                    },
+                }
+            ]
+        )
+        row = RunStatusRepo.get("room-1")
+        assert row.dt == "2026-10-09 17:59:02"
+        assert row.update_dt == "2026-10-09 17:59:02"
 
     def test_persist_ignores_empty_room(self, tmp_db) -> None:
         """空房间号不能写入（否则会污染一个无名房间的数据）。"""

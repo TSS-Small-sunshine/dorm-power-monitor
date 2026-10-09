@@ -120,12 +120,17 @@ def as_list(payload: Any) -> list[dict]:
     return []
 
 
-def check_status(payload: dict, path: str) -> None:
+def check_status(payload: Any, path: str) -> None:
     """校验学校返回的 ``status`` 字段。
+
+    📌 数组响应（F2 / F3 / F5 的列表）**没有** ``status`` —— 那不是失败，
+    直接放行；形状归一化由 :func:`as_list` 负责。
 
     Raises:
         ScrapeError: ``status`` 非 ``"0"``（学校的失败码）。
     """
+    if not isinstance(payload, dict):
+        return
     status = payload.get("status")
     if status is not None and status not in _OK_STATUS:
         message = payload.get("message") or payload.get("msg") or ""
@@ -223,11 +228,14 @@ class _Endpoint:
     interval_sec: int | None = None
     path: str = ""
 
-    def _post(self, ctx, **fields: Any) -> dict[str, Any]:
+    def _post(self, ctx, **fields: Any) -> Any:
         """POST 到本端点的路径并做 ``status`` 校验。
 
+        📌 返回值**可能是数组**（F2 / F3 / F5）—— 调用方一律先过
+        :func:`as_list`，不要假设是 dict。
+
         Raises:
-            ScrapeError: 学校返回失败码，或响应不是对象。
+            ScrapeError: 学校返回失败码。
         """
         payload = ctx.post_form(self.path, {"roomId": ctx.room_id, **fields})
         check_status(payload, self.path)
