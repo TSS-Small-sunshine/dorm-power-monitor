@@ -6,6 +6,20 @@
 > 本文档面向 **amd64**（x86_64）服务器。目标：把旧的 StarWatt 1.x 换成 2.0，
 > **历史数据一条不丢**；能更新就更新，只有旧环境无法修复时才重装。
 
+## ⚠️ 先解决一个命名问题（会卡住侦察阶段）
+
+**同一个项目有两个名字**，服务器上看到的很可能是旧名字：
+
+| 你可能会看到 | 说明 |
+|---|---|
+| `dorm-power-monitor` | **1.x 时期的项目名**（目录 `/opt/dorm-power-monitor`、systemd 单元 `dorm-web.service`） |
+| `StarWatt` / `星瓦` / `starcore` | **2.0 起的项目名与版本代号** |
+| `starwatt` | 2.0 的 Python 包名（`import starwatt`）与镜像名 |
+
+**所以：如果服务器上只有 `dorm-power-monitor`、没有 `starwatt`，那是对的 ——
+`/opt/dorm-power-monitor` 就是要迁移的那个 1.x，不要以为找错了。**
+反之，如果 2.0 已经装过，你会看到 `starwatt` 容器/目录。
+
 ---
 
 ## 给执行者的说明（Agent 先读这一段）
@@ -89,6 +103,34 @@ sudo find / -name '.flask_secret_key' 2>/dev/null
 ```
 
 > **如果有两个 `records.db`**：用「行数多 / 最后写入新」的那个，并在报告里说明另一个是什么。
+
+```bash
+# 0.5 一次收齐下面这些（都是只读，能让后面几个阶段少来回）
+echo "=== 服务怎么起的 ==="
+systemctl cat dorm-web 2>/dev/null || systemctl cat <0.1 找到的单元名>
+
+echo "=== 有没有 cron 在抓取（1.x 靠它）==="
+sudo crontab -l 2>/dev/null | grep -vE '^#' | grep -v '^$' || echo "(root 无 crontab)"
+sudo crontab -u www-data -l 2>/dev/null | grep -vE '^#' | grep -v '^$' || echo "(www-data 无 crontab)"
+
+echo "=== 应用目录里有什么（备份/venv/代码）==="
+ls -la /opt/dorm-power-monitor | head -30
+
+echo "=== .env 里有哪些键（**只看键名，不要贴值**）==="
+sudo grep -oE '^[A-Z_]+=' /opt/dorm-power-monitor/.env 2>/dev/null | tr -d '='
+
+echo "=== 现在跑的是哪个版本 ==="
+curl -fsS http://127.0.0.1:5000/healthz 2>/dev/null || echo "(没有 /healthz → 1.x 很可能没有这个端点，正常)"
+
+echo "=== nginx 反代到哪、域名是什么 ==="
+sudo grep -rnE 'proxy_pass|server_name' /etc/nginx/sites-enabled/ 2>/dev/null | head -20
+```
+
+**这些信息的用途**：`systemctl cat` 决定回滚命令；`crontab` 决定阶段 4 要清理什么
+（1.x 靠 cron 抓取，2.0 自带进程内调度器）；`.env` 的键名用来确认密钥放在哪一项；
+nginx 决定切换后从哪个域名验证。
+
+> 🔴 **`.env` 只报键名，不要把值贴进报告**（里面有 openid 与会话密钥）。
 
 ---
 
@@ -297,6 +339,20 @@ sudo systemctl start <旧服务>
 > ⚠️ 但我**无法替旧代码保证**：它读 `users` 表时如果用 `SELECT *` 再按位置解包，
 > 多出来的列可能让它出错。所以**回滚演练必须真做一次**（阶段 5 就是为此），
 > 而且切换后先别删旧环境。如果演练时旧代码起不来，就恢复阶段 1 的备份。
+
+**⚠️ Docker 路线特有的一个细节：属主**
+
+Docker 容器内是非 root（uid **10001**），而旧服务跑在 `www-data`（uid 33）下。
+如果你在阶段 3/4 执行过 `chown -R 10001:10001 <数据目录>`，**回滚前必须改回来**，
+否则旧服务写不了库（表现为 500 或「数据库只读」）：
+
+```bash
+# 回滚时（裸机旧服务）
+sudo chown -R www-data:www-data /opt/dorm-power-monitor        # 或 <0.2 的库所在目录>
+sudo systemctl start <旧服务名>
+```
+
+数据库内容不受 `chown` 影响（只改属主，不碰数据）。
 
 **报告**：回滚演练是否成功、`/healthz` 是否恢复、旧页面能不能打开。
 
