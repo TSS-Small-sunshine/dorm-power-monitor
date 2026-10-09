@@ -650,3 +650,20 @@ class TestReleaseWorkflow:
         source = _read(RELEASE)
         assert 'cp "starwatt-$VERSION-amd64.tar.gz"' in source
         assert 'mv "starwatt-$VERSION-amd64.tar.gz"' not in source
+
+    def test_no_sigpipe_trap_in_the_smoke_step(self) -> None:
+        """⚠️ `producer | grep -q` 配合 `set -o pipefail` 会**随机**失败。
+
+        踩过的坑：冒烟步骤里写 `docker logs ... | grep -q "初始密码"`。
+        `grep -q` 命中后立刻退出 → docker 收到 SIGPIPE → 整条管道非零 →
+        明明日志里就有密码，脚本却报「没看到」。复现与否取决于谁先结束，
+        所以第一次跑是绿的、第二次才红。改成「先落盘再 grep」，没有管道。
+        """
+        code = [
+            line
+            for line in _read(RELEASE).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        body = "\n".join(code)
+        assert "| grep -q" not in body, "用了会触发 SIGPIPE 的管道写法"
+        assert "grep -q" in body, "但横幅检查本身要保留"
