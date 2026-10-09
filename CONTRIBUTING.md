@@ -198,7 +198,41 @@ tests/                 unit / integration / regression（契约快照）
 
 ---
 
-## 八、想扩展什么
+## 八、发版
+
+一次发版只有三步（其余全由 CI 做）：
+
+```bash
+# 1. 把版本号写进 compose 的默认值（新用户 `docker compose up -d` 拿到的就是它）
+#    docker-compose.yml:  ${STARWATT_TAG:-2.0.1-starcore}
+#    tests/unit/test_deploy.py:  期望值同步改（这条测试就是防漂移的）
+python -m pytest tests/unit/test_deploy.py -q
+
+# 2. 提交并推 main
+git commit -am "chore: bump the compose default tag to 2.0.1-starcore" && git push
+
+# 3. 打 tag —— 这一步才真正触发构建与发布
+git tag -a v2.0.1-starcore -m "StarWatt 2.0.1 星核 / Star Core"
+git push origin v2.0.1-starcore
+```
+
+推完 tag 后 CI 会：跑测试（verify）→ 构建 amd64 + arm64 → 构建 armv7（失败不阻断）→
+导出镜像与离线包并**真起容器冒烟** → 建 Release。
+
+**tag 命名**：必须 `v` 开头，且是合法 semver（`v2.0.1-starcore` 里的 `-starcore`
+被当作 prerelease 后缀，`latest` 仍会打上；带 `-rc` / `-beta` / `-alpha` 的则不会）。
+
+**镜像标签**会自动生成：`2.0.1-starcore`、`2.0`、`v2.0.1-starcore`、`latest`，
+以及 armv7 专用的 `2.0.1-starcore-armv7`。
+
+### 发错了怎么办
+
+* 只错在标签（例如忘了 `latest`）：合并后用 **Actions → Retag** 手动跑一次，
+  它用 `docker buildx imagetools create` 在清单层面复制引用（几秒，保留多架构）
+* 错在代码：修好后打**新** tag（不要移动已发布的 tag —— 别人的镜像可能已经拉过了）
+* 已发布的 Release 可以编辑说明，产物用 `gh release upload --clobber` 覆盖
+
+## 九、想扩展什么
 
 `docs/EXTENDING.md` 里给了六类扩展的分步 SOP（配置项 / 通知渠道 /
 适配其他学校 / 告警层 / 机器人命令 / 前端页面），每类都写明了改哪几个文件、

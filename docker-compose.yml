@@ -26,7 +26,7 @@ services:
     #      不需要等 registry 上有发布版）
     #   2. 本地已有（或你 pull 过）→ 直接用，不重新构建
     # 想强制用发布版、不要本地构建：`docker compose pull` 或删掉 build 那一行。
-    image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.0-starcore}
+    image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.1-starcore}
     build:
       context: .
     container_name: starwatt
