@@ -29,8 +29,24 @@ docker compose logs starwatt | grep 初始密码
 > * 本地没有那个镜像 → **现场构建**（第一次约 3–8 分钟，需要能访问 npm / PyPI）
 > * 本地已有（或你 `docker compose pull` 过）→ 直接用，不重新构建
 >
-> 所以**在官方镜像发布之前，这条命令也能跑通**。想只看构建过程：
-> `docker compose build`；想强制用发布版：`docker compose pull`。
+> 所以即使某个 tag 在 registry 上不存在，这条命令也能跑通。
+> 想只看构建过程：`docker compose build`；想强制用发布版：`docker compose pull`。
+
+**已发布的镜像**（ghcr.io，公开可匿名拉取）：
+
+| Tag | 含义 |
+|---|---|
+| `2.0.0-starcore` | 具体版本（compose 的默认值，**推荐固定用它**） |
+| `2.0.0` | 同一主次版本的最新补丁 |
+| `latest` | 最新稳定版 |
+| `2.0.0-starcore-armv7` | armv7（32 位 ARM）专用 |
+
+```bash
+docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.0-starcore
+```
+
+多架构清单覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` —— `docker pull`
+会按你的机器自动选。
 
 打开 <http://127.0.0.1:5000>，用 `admin` + 上面的密码登录。
 
