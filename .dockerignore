@@ -1,0 +1,57 @@
+# =============================================================================
+# StarWatt 星瓦 —— Docker 构建上下文排除清单
+# =============================================================================
+# 目的：镜像里只放**运行需要的东西**，并且**绝不**把本地状态打进镜像。
+#
+# ⚠️ 三条红线（改这个文件前先读）
+#   1. `.env` 绝不进镜像 —— 里面有 openid / 飞书凭据 / 会话密钥
+#   2. `records.db*` 绝不进镜像 —— 那是**用户的真实数据**，靠卷挂载提供
+#   3. `static/assets` 与 `static/index.html` 不进镜像 —— 前端在镜像内
+#      重新构建（否则代码更新了、产物还是旧的）
+# =============================================================================
+
+# ---- 版本控制 / 本地环境 ----
+.git
+.gitignore
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# ---- 本地密钥与数据（红线 1、2）----
+.env
+.env.*
+!.env.example
+records.db
+records.db-*
+*.db-wal
+*.db-shm
+*.db-journal
+backups
+
+# ---- 前端依赖与产物（红线 3）----
+frontend/node_modules
+frontend/.vite
+static/assets
+static/.vite
+static/index.html
+
+# ---- 与运行无关（省体积）----
+tests
+docs
+*.md
+!README.md
+frontend/README.md
+
+# ---- 本仓库的临时/审计文件 ----
+_*
+.audit-*
+.round*_*
+_stage_*
+_dorm_*_scratch
