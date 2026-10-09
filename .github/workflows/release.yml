@@ -409,10 +409,12 @@ jobs:
           | 文件 | 说明 |
           |---|---|
           | \`starwatt-$VERSION-amd64.tar.gz\` | amd64 镜像，\`docker load\` 即用 |
-          | \`starwatt-$VERSION-offline.tar.gz\` | 离线包：amd64 + arm64 镜像 + compose + 文档 + install.sh |
+          | \`starwatt-$VERSION-arm64.tar.gz\` | arm64 镜像，\`docker load\` 即用 |
+          | \`starwatt-$VERSION-offline.tar.gz\` | 离线包：**上面两个镜像** + compose + 文档 + install.sh |
 
-          镜像 \`$IMAGE:$VERSION\` 是多架构 manifest（含 armv7，若该腿构建成功）。
-          离线包在 CI 里**真起过容器**：load → run → \`/healthz\` 通 → 首页是 SPA。
+          镜像 \`$IMAGE:$VERSION\` 是多架构 manifest（amd64 / arm64；armv7 是单独的
+          \`$VERSION-armv7\` 标签）。离线包在 CI 里**真起过容器**：load → run →
+          \`/healthz\` 通 → 首页是 SPA → 日志里有首启随机密码。
           EOF
           cat notes.md
 
