@@ -222,8 +222,12 @@ git push origin v2.0.1-starcore
 **tag 命名**：必须 `v` 开头，且是合法 semver（`v2.0.1-starcore` 里的 `-starcore`
 被当作 prerelease 后缀，`latest` 仍会打上；带 `-rc` / `-beta` / `-alpha` 的则不会）。
 
-**镜像标签**会自动生成：`2.0.1-starcore`、`2.0`、`v2.0.1-starcore`、`latest`，
+**镜像标签**会自动生成：`2.0.1-starcore`、`v2.0.1-starcore`、`latest`，
 以及 armv7 专用的 `2.0.1-starcore-armv7`。
+
+> ⚠️ **没有** `2.0` 这种主次版本标签：`-starcore` 让版本号按 semver 算 prerelease，
+> 而 docker metadata 对 prerelease 只生成完整版本号 + `latest`，
+> 跳过 `major.minor` 规则（实测确认过，见 `docs/DEPLOY.md` 的标签表）。
 
 ### 发错了怎么办
 
