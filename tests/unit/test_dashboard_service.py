@@ -242,6 +242,22 @@ class TestLive:
         set_many({"eqprice": 0.88})
         assert ds.eqprice() == 0.88  # 配置优先
 
+    def test_daily_avg_uses_a_seven_day_window(self, tmp_db, frozen_now) -> None:
+        """概览的「日均用量」必须算得出来。
+
+        📌 ``stats.daily_avg`` 要求跨度 ≥ 1 天。``live()`` 曾经只查 24 小时
+        （``DEFAULT_HOURS``），窗口里永远凑不满一天 → 卡片恒显示「—」。
+        ``days_remaining()`` 早就改用 ``DAILY_AVG_HOURS`` 了，这里锁住
+        ``live()`` 也必须用 7 天窗口。
+
+        数据：3 天前 60 度 → 现在 54 度 = 6 度 / 3 天 = 2.0 度/天。
+        24 小时窗口里只剩后一条 → 跨度为 0 → 修之前这里是 ``None``。
+        """
+        RecordRepo.insert(Record(ts="2026-10-03 12:00:00", read_time=None, remain=60.0))
+        RecordRepo.insert(Record(ts="2026-10-06 12:00:00", read_time=None, remain=54.0))
+        payload = ds.live(today=date(2026, 10, 7))
+        assert payload["stats"]["daily_avg"] == pytest.approx(2.0)
+
     def test_days_remaining(self, tmp_db, frozen_now) -> None:
         RecordRepo.insert(Record(ts="2026-09-29 12:00:00", read_time=None, remain=44.0))
         RecordRepo.insert(Record(ts="2026-10-06 12:00:00", read_time=None, remain=30.0))
