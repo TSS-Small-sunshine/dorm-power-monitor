@@ -24,6 +24,7 @@
 import type {
   AdminUser,
   AuditEntry,
+  CommitResult,
   ConfigExportPayload,
   ConfigImportResult,
   ConfigResetResult,
@@ -36,9 +37,13 @@ import type {
   LivePayload,
   LoginPayload,
   MePayload,
+  OobeAdvanceResult,
+  OobeStatePayload,
+  ParseUrlResult,
   PaymentPayload,
   RefreshPayload,
   SitePayload,
+  VerifyResult,
   ViolationPayload,
 } from './types'
 
@@ -232,4 +237,40 @@ export const api = {
     request<{ entries: AuditEntry[] }>(
       `/api/admin/audit?limit=${limit}${action ? `&action=${encodeURIComponent(action)}` : ''}`,
     ),
+
+  // -------------------------------------------------------------------------
+  // OOBE 引导（5 步 / 只有两个端点）
+  // -------------------------------------------------------------------------
+  oobeState: () => request<OobeStatePayload>('/api/oobe/state'),
+
+  /** 保存本步并移动；207 = 本步有键没通过校验（载荷里带中文原因） */
+  oobeAdvance: (body: {
+    direction: 'next' | 'prev'
+    values?: Record<string, unknown>
+    skip?: boolean
+  }) =>
+    request<OobeAdvanceResult>('/api/oobe/advance', {
+      method: 'POST',
+      body,
+      okStatuses: [207],
+    }),
+
+  // -------------------------------------------------------------------------
+  // 自助配置（N4）
+  // -------------------------------------------------------------------------
+  /** 粘贴学校 H5 地址 → 解析出 openid / roomId（**不落库**） */
+  setupParseUrl: (url: string) =>
+    request<ParseUrlResult>('/api/setup/parse-url', { method: 'POST', body: { url } }),
+
+  /** 真的连一次学校接口验证凭据（**不落库**） */
+  setupVerify: (body: { openid: string; room_id?: string; base_url?: string }) =>
+    request<VerifyResult>('/api/setup/verify', { method: 'POST', body }),
+
+  /** 保存自助配置（走配置中心同一套校验） */
+  setupCommit: (body: Record<string, unknown>) =>
+    request<CommitResult>('/api/setup/commit', {
+      method: 'POST',
+      body,
+      okStatuses: [207],
+    }),
 }

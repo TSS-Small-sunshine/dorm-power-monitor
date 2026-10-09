@@ -44,6 +44,18 @@ const router = createRouter({
       meta: { title: '修改密码' },
     },
     {
+      path: '/oobe',
+      name: 'oobe',
+      component: () => import('@/views/OobeView.vue'),
+      meta: { title: '首次配置', admin: true },
+    },
+    {
+      path: '/forgot',
+      name: 'forgot',
+      component: () => import('@/views/ForgotPasswordView.vue'),
+      meta: { public: true, title: '忘记密码' },
+    },
+    {
       path: '/admin',
       component: () => import('@/views/admin/AdminShell.vue'),
       meta: { title: '管理', admin: true },
@@ -97,7 +109,14 @@ router.beforeEach(async (to) => {
   }
 
   if (!auth.authenticated) {
-    return { name: 'login', query: { redirect: to.fullPath } }
+    return {
+      name: 'login',
+      query: {
+        redirect: to.fullPath,
+        // 会话过期才提示（「从没登录过」不提示，避免噪音）
+        ...(auth.sessionExpired ? { expired: '1' } : {}),
+      },
+    }
   }
 
   if (auth.mustChangePassword && to.name !== 'password') {
@@ -107,6 +126,16 @@ router.beforeEach(async (to) => {
   // 管理分支：前端只隐藏入口（体验），后端 admin_access 才是安全边界
   if (to.meta.admin && !auth.isAdmin) {
     return { name: 'dashboard' }
+  }
+
+  // 首次配置向导（B4/B5）：管理员还没走完 OOBE 就先引导过去。
+  // 只对管理员查（该端点 admin_access），且查失败（例如被强制改密拦住）
+  // 不缓存结果，改完密码后能重新判断。
+  if (auth.isAdmin && to.name !== 'oobe') {
+    await auth.checkOobe()
+    if (auth.oobeCompleted === false) {
+      return { name: 'oobe', query: { redirect: to.fullPath } }
+    }
   }
 
   // 改完密就不该再停留在改密页

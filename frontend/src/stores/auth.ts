@@ -25,6 +25,15 @@ interface State {
   ready: boolean
   loading: boolean
   error: string
+  /**
+   * OOBE 是否已完成（B4/B5）。
+   *
+   * ``null`` = 还没查过。守卫在管理员首次进入时查一次
+   * （``/api/oobe/state`` 仅管理员可读，所以只对管理员查）。
+   */
+  oobeCompleted: boolean | null
+  /** 上一次是因为「会话过期」被踢回登录页（用于显示提示，不弹原生框） */
+  sessionExpired: boolean
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -34,6 +43,8 @@ export const useAuthStore = defineStore('auth', {
     ready: false,
     loading: false,
     error: '',
+    oobeCompleted: null,
+    sessionExpired: false,
   }),
 
   getters: {
@@ -60,6 +71,26 @@ export const useAuthStore = defineStore('auth', {
       const payload = await api.me()
       setCsrfToken(payload.csrf_token)
       this.user = payload.authenticated ? payload.user : null
+      // 换了身份就要重新问一次 OOBE 状态（不同账号可能权限不同）
+      this.oobeCompleted = null
+      // 身份是刚确认过的 → 清掉「会话过期」提示
+      if (this.user) this.sessionExpired = false
+    },
+
+    /**
+     * 查一次 OOBE 状态（**仅管理员**；只查一次）。
+     *
+     * 失败时**不改** ``oobeCompleted``（保持 ``null``）：失败通常意味着
+     * 「强制改密拦住了」或「不是管理员」—— 两种情况都不该把用户往向导里推，
+     * 也不该把这个结果缓存下来，改完密码后要能重新判断。
+     */
+    async checkOobe(): Promise<void> {
+      if (!this.isAdmin || this.oobeCompleted !== null) return
+      try {
+        this.oobeCompleted = (await api.oobeState()).completed
+      } catch {
+        this.oobeCompleted = null
+      }
     },
 
     /** 应用启动：先拿品牌色，再探身份（顺序无所谓，但都要跑） */
@@ -114,6 +145,8 @@ export const useAuthStore = defineStore('auth', {
     handle(error: unknown): boolean {
       if (!(error instanceof ApiError)) return false
       if (error.isUnauthenticated) {
+        // 区分「从没登录过」与「登录着但会话过期了」——后者要提示用户
+        this.sessionExpired = this.user !== null
         this.user = null
         return true
       }

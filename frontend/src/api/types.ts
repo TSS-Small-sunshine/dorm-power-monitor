@@ -250,3 +250,75 @@ export interface AuditEntry {
   created_at: string
   details: Record<string, unknown> | null
 }
+
+// ---------------------------------------------------------------------------
+// OOBE 引导（5 步，B4/B5）—— 契约见 starwatt/services/oobe_service.py
+// ---------------------------------------------------------------------------
+
+/** 步骤条上的一个格子 */
+export interface OobeStepInfo {
+  index: number
+  key: string
+  title: string
+  /** 必填项都填了 */
+  done: boolean
+}
+
+/** 当前步（含表单元数据，直接喂给 ConfigField） */
+export interface OobeStepPayload {
+  index: number
+  key: string
+  title: string
+  description: string
+  keys: string[]
+  /** 本步可写的键（``keys`` 去掉运行时状态） */
+  writable: string[]
+  /** 本步必填的键（为空即「可跳过」） */
+  required: string[]
+  done: boolean
+  settings: ConfigSetting[]
+}
+
+export interface OobeStatePayload {
+  step: number
+  total: number
+  completed: boolean
+  steps: OobeStepInfo[]
+  current: OobeStepPayload
+  /** 全部配置当前值（secret 脱敏） */
+  values: Record<string, unknown>
+}
+
+/** ``POST /api/oobe/advance`` —— state 载荷 + 本步保存结果 */
+export interface OobeAdvanceResult extends OobeStatePayload {
+  saved: ConfigUpdateResult
+}
+
+// ---------------------------------------------------------------------------
+// 自助配置（N4）：粘贴学校 H5 地址 → 解析 → 验证 → 保存
+// ---------------------------------------------------------------------------
+
+export interface ParseUrlResult {
+  ok: boolean
+  error?: string
+  openid?: string
+  room_id?: string
+  room_no?: string
+  room_label?: string
+  eqprice?: number | null
+  base_url?: string
+}
+
+export interface VerifyResult {
+  ok: boolean
+  room_id: string
+  room_label: string | null
+  remain: number | null
+  read_time: string | null
+  error: string | null
+}
+
+export interface CommitResult extends ConfigUpdateResult {
+  ok: boolean
+  room_id?: string
+}
