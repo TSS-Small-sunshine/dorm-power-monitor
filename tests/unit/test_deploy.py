@@ -338,3 +338,70 @@ class TestInstallScript:
         )
         assert result.returncode != 0
         assert "未知参数" in (result.stdout or "")
+
+
+# ===========================================================================
+# .github/workflows/release.yml
+# ===========================================================================
+RELEASE = PROJ / ".github" / "workflows" / "release.yml"
+
+
+class TestReleaseWorkflow:
+    """发布流水线的关键契约。
+
+    这些点错了都不会在开发时暴露：镜像推不上去（大小写）、armv7 拖垮整个发布、
+    离线包其实起不来。CI 里跑一次才几秒钟，比发版时才发现便宜得多。
+    """
+
+    def test_exists_and_triggers_on_tags(self) -> None:
+        source = _read(RELEASE)
+        assert "tags: ['v*']" in source
+        assert "workflow_dispatch" in source
+
+    def test_permissions_allow_packages_and_releases(self) -> None:
+        source = _read(RELEASE)
+        assert "packages: write" in source
+        assert "contents: write" in source
+
+    def test_image_name_is_lowercased(self) -> None:
+        """GHCR 要求镜像名全小写，而仓库名里有大写字母（TSS-Small-sunshine）。"""
+        assert "tr '[:upper:]' '[:lower:]'" in _read(RELEASE)
+
+    def test_main_platforms_are_amd64_and_arm64(self) -> None:
+        assert "platforms: linux/amd64,linux/arm64" in _read(RELEASE)
+
+    def test_armv7_is_isolated_and_non_blocking(self) -> None:
+        """RK5：armv7 构建失败不得拖垮发布（降级为「仅离线包」）。"""
+        source = _read(RELEASE)
+        assert "linux/arm/v7" in source
+        assert "continue-on-error: true" in source
+        assert "needs.build.result == 'success'" in source
+
+    def test_runs_tests_before_building(self) -> None:
+        source = _read(RELEASE)
+        assert "needs: verify" in source
+        assert "python -m pytest -q" in source
+        assert "python -m scripts.secret_scan" in source
+
+    def test_offline_bundle_is_really_booted(self) -> None:
+        """「离线包可 docker load 并启动」这条 DoD 的证据只能是真起容器。"""
+        source = _read(RELEASE)
+        assert "docker load -i" in source
+        assert "docker run -d" in source
+        assert "/healthz" in source
+        assert 'id="app"' in source  # 首页是 SPA → 前端产物确实进了镜像
+        assert "初始密码" in source  # entrypoint 真的打印了随机密码
+
+    def test_bundle_uses_a_named_volume(self) -> None:
+        """容器内是非 root(10001)：宿主目录挂 /data 会写不进去，必须用卷。"""
+        assert "-v starwatt-smoke:/data" in _read(RELEASE)
+
+    def test_release_uploads_the_bundles(self) -> None:
+        source = _read(RELEASE)
+        assert "gh release create" in source
+        assert "dist/*.tar.gz" in source
+
+    def test_offline_bundle_carries_docs_and_installer(self) -> None:
+        source = _read(RELEASE)
+        for item in ("docker-compose.yml", ".env.example", "install.sh", "deploy/dorm-web.service"):
+            assert item in source, item
