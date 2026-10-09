@@ -26,6 +26,7 @@ REQUIRED_DOCS = {
     PROJ / "docs" / "FAQ.md": "常见问题",
     PROJ / "docs" / "UPGRADE.md": "升级与回滚",
     PROJ / "docs" / "M7_CUTOVER.md": "切换与验收指南",
+    PROJ / "docs" / "AGENT_RUNBOOK.md": "服务器切换 Runbook（交给服务器 Agent）",
     PROJ / "docs" / "EXTENDING.md": "扩展指南",
     PROJ / "CONTRIBUTING.md": "贡献指南",
 }

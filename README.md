@@ -482,6 +482,7 @@ sudo systemctl start dorm-web
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | 部署指南：Docker / 离线包 / 裸机 / nginx+HTTPS / 备份 / 上线清单 |
 | [`docs/DEPLOY_PAAS.md`](docs/DEPLOY_PAAS.md) | 托管平台：Vercel / Netlify / EdgeOne / Fly / Render 能不能一键部署 |
 | [`docs/M7_CUTOVER.md`](docs/M7_CUTOVER.md) | **切换与验收**：数据库自检、旁路试跑、9 项验收、回滚演练 |
+| [`docs/AGENT_RUNBOOK.md`](docs/AGENT_RUNBOOK.md) | **交给服务器上的 Agent 执行**的切换 Runbook（含红线与报告模板） |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | 配置说明：两层配置模型、9 组 94 项、加密项、18 个开关、7×8 日志 |
 | [`docs/FAQ.md`](docs/FAQ.md) | 常见问题：忘记密码、抓不到数据、机器人不回复、迁移与备份 |
 | [`docs/UPGRADE.md`](docs/UPGRADE.md) | 升级与回滚（含 30 秒回滚演练） |
