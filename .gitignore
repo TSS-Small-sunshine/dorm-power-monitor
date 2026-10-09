@@ -56,3 +56,6 @@ records.db
 *.db-shm
 *.db-journal
 tests/**/records.db
+
+# 发布说明（由 release workflow 生成；本地用脚本复现时也会落在根目录）
+/notes.md
