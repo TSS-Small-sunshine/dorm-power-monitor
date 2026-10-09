@@ -294,30 +294,47 @@ sudo sqlite3 "file:/tmp/starwatt-test/records.db?mode=ro" \
 crontab -l > /root/crontab-backup-$(date +%F).txt      # 先备份
 crontab -l | grep -v -iE 'dorm|starwatt|power' | crontab -   # 去掉相关行
 
-# 4.2 起新的 —— 这次用**原库**（不是副本）
-#     Docker：改回正式端口与正式卷/目录，然后
-docker compose up -d
-#     裸机：会保留 .env 与数据，只重建依赖/前端
-sudo ./install.sh --upgrade
+# 4.2 起新的 —— 数据布局（**关键：旧文件一个字节都不动**）
+#
+#   把库**复制**到 2.0 的标准数据目录，而不是 chown 旧目录去复用：
+#     · 旧的 /opt/dorm-power-monitor/records.db 保持原样 → 回滚时旧服务起来就是原状态，
+#       连「旧代码能不能容忍多出来的 2 列」这个疑问都不存在了
+#     · 端口沿用 5000 → nginx 一行都不用改
+sudo mkdir -p /var/lib/dorm-power-monitor
+sudo cp -a <0.2 的 records.db> /var/lib/dorm-power-monitor/records.db
+sudo chown -R 10001:10001 /var/lib/dorm-power-monitor   # 容器内是非 root(10001)
+
+# Docker：用官方 compose（它会读 .env 里的 4 项；没有 .env 也有默认值）
+cd /opt/dorm-power-monitor && docker compose up -d
+# 裸机：保留 .env 与数据，只重建依赖/前端
+# sudo ./install.sh --upgrade
 ```
 
-> ⚠️ **不要删旧容器、旧代码目录、旧 systemd 单元** —— 阶段 5 回滚要用它们。
+> ⚠️ **不要删旧容器、旧代码目录、旧 systemd 单元、旧 `records.db`** —— 阶段 5 回滚要用它们。
 
 **4.3 验证**（与阶段 3 相同的检查，换成正式地址）
 
 ```bash
 curl -fsS http://127.0.0.1:5000/healthz
 python -m scripts.cutover_check --base http://127.0.0.1:5000 \
-  --user admin2 --password '...' --db <正式库路径>
+  --user admin2 --password '...' --db /var/lib/dorm-power-monitor/records.db
 ```
 
 **4.4 数据没丢的最终确认**
 
 ```bash
-sudo sqlite3 "file:<正式库路径>?mode=ro" \
+sudo sqlite3 "file:/var/lib/dorm-power-monitor/records.db?mode=ro" \
   "SELECT COUNT(*), MIN(ts), MAX(ts) FROM records;"
 # 预期：与阶段 0 的行数一致（升级只会加列，不会删行）
+
+# 顺便确认旧库确实没被动过（sha256 应与阶段 1 备份一致）
+sudo sha256sum /opt/dorm-power-monitor/records.db
 ```
+
+**4.5 nginx 需要改吗**
+
+**不需要** —— 新旧都监听 `127.0.0.1:5000`，nginx 的 `proxy_pass` 一行都不用动。
+切换后直接从域名访问验证即可。
 
 ---
 
@@ -333,28 +350,26 @@ sudo systemctl stop <新服务>
 sudo systemctl start <旧服务>
 ```
 
-**数据不用动**：新旧代码读写同一个 `records.db`。2.0 的迁移**只新增**列
-（`users` 多 2 列），不删列、不改列，所以回滚通常是安全的。
-
-> ⚠️ 但我**无法替旧代码保证**：它读 `users` 表时如果用 `SELECT *` 再按位置解包，
-> 多出来的列可能让它出错。所以**回滚演练必须真做一次**（阶段 5 就是为此），
-> 而且切换后先别删旧环境。如果演练时旧代码起不来，就恢复阶段 1 的备份。
-
-**⚠️ Docker 路线特有的一个细节：属主**
-
-Docker 容器内是非 root（uid **10001**），而旧服务跑在 `www-data`（uid 33）下。
-如果你在阶段 3/4 执行过 `chown -R 10001:10001 <数据目录>`，**回滚前必须改回来**，
-否则旧服务写不了库（表现为 500 或「数据库只读」）：
+**数据不用动**，因为按 4.2 的布局，旧的 `/opt/dorm-power-monitor/records.db`
+**从头到尾没被碰过**（新版本用的是 `/var/lib/dorm-power-monitor/` 里的副本）。
+所以回滚就是「把旧服务起回来」，连「旧代码能不能容忍多出来的 2 列」这个疑问都不存在：
 
 ```bash
-# 回滚时（裸机旧服务）
-sudo chown -R www-data:www-data /opt/dorm-power-monitor        # 或 <0.2 的库所在目录>
-sudo systemctl start <旧服务名>
+# Docker 路线
+docker stop starwatt                 # 停新的（容器名以实际为准）
+sudo systemctl start dorm-web        # 旧服务原样起回来，端口 5000 立刻恢复
+
+# 裸机路线
+sudo systemctl stop <新服务>
+sudo systemctl start <旧服务>
 ```
 
-数据库内容不受 `chown` 影响（只改属主，不碰数据）。
+> 只有在**没有**按 4.2 走、而是直接 `chown` 复用旧目录的情况下，才需要先
+> `sudo chown -R www-data:www-data /opt/dorm-power-monitor` 再起旧服务
+> （容器内是 uid 10001，旧服务是 www-data）。推荐布局不会有这个问题。
 
 **报告**：回滚演练是否成功、`/healthz` 是否恢复、旧页面能不能打开。
+演练完再切回新版（`docker compose up -d` + `systemctl stop dorm-web`）。
 
 ---
 
