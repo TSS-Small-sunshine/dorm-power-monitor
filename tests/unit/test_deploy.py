@@ -235,6 +235,34 @@ class TestCompose:
         assert "IMAGE_NAME: starwatt" in release
         assert "tr '[:upper:]' '[:lower:]'" in release
 
+    def test_latest_tag_rule_uses_a_dashed_prerelease_marker(self) -> None:
+        """`latest` 的启用条件必须带连字符判断预发布。
+
+        踩过的坑：原本写的是「标签里不含 `rc`」—— 而本项目的版本代号是
+        **starcore**，里面正好含 `rc`，于是 `latest` 永远打不上，
+        而 `docker pull` 不带 tag 时默认就找 `latest`。
+
+        ⚠️ 只看**代码行**：文件里有一条注释专门说明这个坑，
+        纯文本 grep 会把那条注释本身当成违规（踩过两次了）。
+        """
+        code = [
+            line
+            for line in _read(RELEASE).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        body = "\n".join(code)
+        assert "!contains(github.ref_name, '-rc')" in body
+        assert "contains(github.ref_name, 'rc')" not in body.replace(
+            "contains(github.ref_name, '-rc')", ""
+        )
+
+    def test_retag_workflow_preserves_multi_arch(self) -> None:
+        """补标签必须走 imagetools（清单级复制）—— pull/tag/push 会丢多架构。"""
+        retag = (PROJ / ".github" / "workflows" / "retag.yml").read_text(encoding="utf-8")
+        assert "imagetools create" in retag
+        assert "workflow_dispatch" in retag
+        assert "packages: write" in retag
+
     def test_dockerfile_copy_sources_exist(self) -> None:
         """Dockerfile 里 COPY 的源路径必须真的存在（否则只有构建时才报错）。"""
         missing: list[str] = []

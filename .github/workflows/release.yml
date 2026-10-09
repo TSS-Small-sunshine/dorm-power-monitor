@@ -121,7 +121,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'rc') }}
+            # ⚠️ 别写成 !contains(github.ref_name, 'rc') —— 本项目的版本代号是
+            #    「starcore」，里面**正好含 rc**，那样 latest 永远打不上（踩过）。
+            #    判断预发布必须带连字符，写成 -rc / -beta / -alpha。
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
 
       - name: 构建并推送（amd64 + arm64）
         uses: docker/build-push-action@v6
@@ -347,6 +350,10 @@ jobs:
     if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     steps:
+      # ⚠️ 必须 checkout：`gh release create` 需要工作区里有 .git 才能确定仓库，
+      #    少了这一步会以「fatal: not a git repository」失败（踩过）。
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: starwatt-release-${{ needs.build.outputs.version }}
@@ -400,12 +407,21 @@ jobs:
           EOF
           cat notes.md
 
-      - name: 建 Release 并上传产物
+      - name: 建 Release 并上传产物（幂等）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "StarWatt 星瓦 ${GITHUB_REF_NAME}" \
-            --notes-file notes.md \
-            dist/*.tar.gz
+          TAG="${GITHUB_REF_NAME}"
+          # 幂等：Release 已存在（例如上一次跑失败后又重跑）就只覆盖产物，
+          # 而不是报「already exists」把整个 job 弄红。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz --clobber
+          else
+            gh release create "$TAG" \
+              --title "StarWatt 星瓦 ${TAG}" \
+              --notes-file notes.md \
+              dist/*.tar.gz
+          fi
+          gh release view "$TAG" --json tagName,assets \
+            --jq '.tagName, (.assets[] | "  \(.name)  \(.size)")'
