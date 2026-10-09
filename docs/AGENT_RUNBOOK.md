@@ -16,7 +16,7 @@
 
 ### 0.1 你的任务
 
-把这台服务器上的 **StarWatt 1.x** 升级为 **2.0.1**，**历史数据一条不丢**。
+把这台服务器上的 **StarWatt 1.x** 升级为 **2.0.2**，**历史数据一条不丢**。
 
 ### 0.2 三条红线（任何阶段、任何理由都不得违反）
 
@@ -63,17 +63,27 @@
 | `dorm-power-monitor` | **1.x 时期的项目名**。目录 `/opt/dorm-power-monitor`、systemd 单元 `dorm-web.service`、`web.py` |
 | `StarWatt` / `星瓦` | **2.0 起的项目名**（本任务的目标） |
 | `starwatt` | 2.0 的 Python 包名（`import starwatt`）与容器镜像名 |
-| `starcore` | 2.0 的版本代号（版本号形如 `2.0.1-starcore`） |
+| `starcore` | 2.0 的版本代号（版本号形如 `2.0.2-starcore`） |
 
 **结论：服务器上只有 `dorm-power-monitor`、完全没有 `starwatt`，这是正常的** ——
 `/opt/dorm-power-monitor` 就是要升级的那个 1.x。**不要以为找错了对象。**
 
 ### 1.2 目标产物
 
+> ⚠️ **版本提示（2026-10-09 审计后新增）**
+>
+> 本文件原本指向 `2.0.1`（见下方 Release 页）。该版本有一个**会让 F2/F3/F5 静默失败**的
+> 缺陷（HTTP 客户端拒绝 JSON 数组 → 每日用电/违规/缴费三张表恒空，而抓取仍
+> 报成功），以及电表「最后上报」恒为 `—`、概览「日均用量」算不出、充值后日均
+> 变负数等问题。**修复已合并到 `main`，但不在 2.0.1 里。**
+>
+> **请用 `2.0.2-starcore`（或更新）执行切换**；若该 tag 尚未发布，先请维护者
+> 发版 —— **不要用 2.0.1 切换**（数据不会丢，但上述几段会一直空着且不报错）。
+
 * 项目主页：https://github.com/TSS-Small-sunshine/dorm-power-monitor （公开仓库）
-* 目标版本：**2.0.1-starcore**
-* Docker 镜像：`ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore`
-* 离线包（镜像拉不动时用）：Release 页的 `starwatt-2.0.1-starcore-amd64.tar.gz`
+* 目标版本：**2.0.2-starcore**（2.0.1 有上述缺陷，勿用）
+* Docker 镜像：`ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore`
+* 离线包（镜像拉不动时用）：Release 页的 `starwatt-2.0.2-starcore-amd64.tar.gz`
   https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
 * 自检工具（在仓库 `scripts/` 下，镜像里也带着）：
   * `scripts/check_db.py` —— 数据库兼容性自检（**纯标准库**，宿主机 `python3` 可直接跑）
@@ -93,6 +103,8 @@
 | 配置文件 | `/opt/dorm-power-monitor/.env`，**730 字节** |
 | 反向代理 | nginx 占用 80/443，反代到后端 5000 |
 | 已完成 | **阶段 1 备份已完成**：`/opt/deploy/backup-20261009-165444`（权限 750，含 `records.db` 与 `env.bak`），sha256 双向一致，`PRAGMA integrity_check` = ok |
+| ⚠️ 该备份的**已知局限** | 它是在**旧服务仍在运行**时 `cp` 出来的。旧库是 **WAL 模式**（旧代码就是 WAL），`cp` 只复制主文件 → 可能丢掉还在 `records.db-wal` 里、尚未 checkpoint 的最近提交。**正式切换前必须重做一次**（见 §5.1 的 `.backup` 写法），并用行数确认它与源库一致 |
+| 待补的只读事实 | `PRAGMA journal_mode`（确认是否 `wal`）、`records` 的**行数与 `MAX(ts)`**（"数据没丢"的基线） |
 | 工作目录约定 | 本机已用 `/opt/deploy/` 放备份 → 后续也用 `/opt/deploy/` 放测试实例 |
 
 ### 1.4 已定决策（**不要再问**）
@@ -244,7 +256,7 @@ schema_version：0（老库（没有 schema_version 记录：v1 基线或更早�
 ### 4.1 拉取镜像
 
 ```bash
-sudo docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+sudo docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore
 ```
 
 **拉不动时走离线包**（离线包不依赖任何外网）：
@@ -252,8 +264,8 @@ sudo docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
 ```bash
 # 在能上网的机器下载（或让人传给你）：
 #   https://github.com/TSS-Small-sunshine/dorm-power-monitor/releases
-#   → starwatt-2.0.1-starcore-amd64.tar.gz
-sudo docker load -i starwatt-2.0.1-starcore-amd64.tar.gz
+#   → starwatt-2.0.2-starcore-amd64.tar.gz
+sudo docker load -i starwatt-2.0.2-starcore-amd64.tar.gz
 sudo docker images | grep starwatt      # 确认镜像已导入
 ```
 
@@ -301,8 +313,18 @@ sudo chmod +x /opt/deploy/starwatt-env.sh
 ```bash
 bash -c '
 sudo mkdir -p /opt/deploy/starwatt-test
-sudo cp -a /opt/dorm-power-monitor/records.db /opt/deploy/starwatt-test/records.db
 sudo chown -R 10001:10001 /opt/deploy/starwatt-test
+
+# ⚠️ 不要用 cp 复制主文件：旧库是 **WAL 模式**，最近的提交可能还在
+# records.db-wal 里没 checkpoint —— cp 只拿主文件，会静默丢掉它们。
+# sqlite3 的 .backup 是**在线一致性快照**，WAL 感知，且不打扰正在运行的旧服务。
+sudo sqlite3 /opt/dorm-power-monitor/records.db \
+  ".backup '/opt/deploy/starwatt-test/records.db'"
+sudo chown 10001:10001 /opt/deploy/starwatt-test/records.db
+
+# 立刻比对行数（副本不得明显少于源库）
+echo "副本 records 行数：$(sudo sqlite3 "file:/opt/deploy/starwatt-test/records.db?mode=ro" "SELECT COUNT(*) FROM records;")"
+echo "源库 records 行数：$(sudo sqlite3 "file:/opt/dorm-power-monitor/records.db?mode=ro" "SELECT COUNT(*) FROM records;")"
 sudo ls -la /opt/deploy/starwatt-test
 
 # 生成影子实例的环境文件（沿用旧密钥）
@@ -310,7 +332,8 @@ sudo /opt/deploy/starwatt-env.sh /opt/deploy/starwatt-test.env
 '
 ```
 
-**预期**：`records.db` 属主 `10001`、大小 69632 字节（与基线一致）；
+**预期**：`records.db` 属主 `10001`；两个行数**相同或源库只多出「复制之后刚抓的那一行」**
+（旧服务仍在每 10 分钟抓一次）。**若副本少了几十上百行 → 停下报告**（说明复制丢数据）。
 环境文件生成成功且**不含任何明文打印**。
 
 ### 4.4 起影子实例
@@ -320,7 +343,7 @@ sudo docker run -d --name starwatt-test \
   -p 127.0.0.1:5001:5000 \
   -v /opt/deploy/starwatt-test:/data \
   --env-file /opt/deploy/starwatt-test.env \
-  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+  ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore
 
 sleep 8
 sudo docker logs starwatt-test | tail -40
@@ -462,7 +485,10 @@ ss -lntp | grep :5000 || echo "(5000 已释放)"
 ```bash
 bash -c '
 sudo mkdir -p /var/lib/dorm-power-monitor
-sudo cp -a /opt/dorm-power-monitor/records.db /var/lib/dorm-power-monitor/records.db
+# 旧服务此时已停（§5.1）→ WAL 已在关闭时合并。这里仍用 .backup：
+# 它不依赖「关闭时是否 checkpoint」，永远拿到一致性快照。
+sudo sqlite3 /opt/dorm-power-monitor/records.db \
+  ".backup '/var/lib/dorm-power-monitor/records.db'"
 sudo chown -R 10001:10001 /var/lib/dorm-power-monitor
 sudo ls -la /var/lib/dorm-power-monitor
 
@@ -490,7 +516,7 @@ sudo docker run -d --name starwatt \
   -p 127.0.0.1:5000:5000 \
   -v /var/lib/dorm-power-monitor:/data \
   --env-file /opt/deploy/starwatt.env \
-  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+  ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore
 
 sleep 8
 sudo docker ps --filter name=starwatt
@@ -651,7 +677,7 @@ curl -fsS http://127.0.0.1:5000/healthz
 
 ```
 【StarWatt 2.0 切换完成报告】
-版本：1.x（dorm-power-monitor）→ 2.0.1-starcore
+版本：1.x（dorm-power-monitor）→ 2.0.2-starcore
 部署形态：Docker（容器名 starwatt，端口 5000）
 数据目录：/var/lib/dorm-power-monitor/records.db
 行数对账：切换前 ____ 行 → 切换后 ____ 行（一致：是/否）
@@ -693,6 +719,8 @@ sudo crontab -l 2>/dev/null | grep -v -iE "dorm|starwatt|power" | sudo crontab -
 
 # 2) 数据目录：把备份里的库放进去
 sudo mkdir -p /var/lib/dorm-power-monitor
+# ⚠️ 这个备份是「旧服务运行期间 cp」出来的，可能缺最近几行（WAL 未 checkpoint）。
+# 优先用 §5.2 重做过的那一份（切换前的 .backup 快照）；两者都比没有强。
 sudo cp -a /opt/deploy/backup-20261009-165444/records.db /var/lib/dorm-power-monitor/
 sudo chown -R 10001:10001 /var/lib/dorm-power-monitor
 
@@ -706,7 +734,7 @@ sudo docker run -d --name starwatt \
   -p 127.0.0.1:5000:5000 \
   -v /var/lib/dorm-power-monitor:/data \
   --env-file /opt/deploy/starwatt.env \
-  ghcr.io/tss-small-sunshine/starwatt:2.0.1-starcore
+  ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore
 '
 ```
 
@@ -726,6 +754,8 @@ sudo docker run -d --name starwatt \
 | 登录返回 **500**，日志 `no such column: disabled` | 库结构没升级 | 确认用的是 **2.0.1** 镜像（`create_app()` 会自己迁移）；确认不是自己写脚本启动的 |
 | 旧密码登不上 | 1.x 用 bcrypt，2.0 用 scrypt | **正常现象** → 按 §4.4 建新管理员 |
 | 「历史/违规/缴费/电表」空但概览有数据 | `last_room_id` 尚未由抓取发布 | 点「刷新」或等一个周期（**不是数据丢失**） |
+| 「违规/缴费/每日用电」**长期**空，日志里有 `返回的 JSON 不是对象` | 2.0.1 的 HTTP 客户端只接受 JSON **对象**，而 F2/F3/F5 返回**数组** → 三个端点每次都失败（`ok=True` 仍报成功） | **升到 2.0.2+**（修复已合并）；`cutover_check` 的 `/api/daily`、`/api/payments` 两栏会标红 |
+| 备份/副本比源库**少几行** | 旧库是 WAL 模式，`cp` 只复制主文件，丢掉未 checkpoint 的提交 | 用 `sqlite3 <源库> ".backup '<目标>'"` 重做（§4.3 / §5.2） |
 | `Permission denied` 写 `/data` | 宿主目录属主不对 | `sudo chown -R 10001:10001 <数据目录>` |
 | 容器起来但外部访问不到 | 绑到了 127.0.0.1 | 需要 `-e GUNICORN_BIND=0.0.0.0:5000`（compose 已设） |
 | 首页空白 / 资源 404 | 前端产物没进镜像 | 用官方镜像；裸机则 `cd frontend && npm ci && npm run build` |
@@ -800,5 +830,5 @@ sudo docker rm -f starwatt-test        # 仅在全部验收通过、且人确认
 
 ---
 
-**文档版本**：随 StarWatt 2.0.1-starcore 发布；如与服务器实际不符，以报告为准并停下来问人。
+**文档版本**：随 StarWatt 2.0.2-starcore 发布；如与服务器实际不符，以报告为准并停下来问人。
 
