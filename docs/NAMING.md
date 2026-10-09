@@ -54,7 +54,13 @@ v<MAJOR>.<MINOR>.<PATCH>  「<中文代号> / <English Codename>」
 |---|---|---|---|
 | `1.0.0` | 初尘 / First Dust | R51c | baseline（已发布 `v1.0.0-r51c-baseline`） |
 | `1.1.0` | 微光 / Glimmer | R60–R68 | bundle（已发布 `v1.1.0-r68`） |
-| **`2.0.0`** | **星核 / Star Core** | **R69** | **本次重写** ← 当前目标 |
+| **`2.0.0`** | **星核 / Star Core** | **R69** | **重写**（已发布 `v2.0.0-starcore`） |
+| `2.0.1` | 星核 / Star Core | — | patch：镜像 tag + `scripts/cutover_check.py`。⚠️ **含「F2/F3/F5 静默失败」缺陷，勿用于升级** |
+| `2.0.2` | 星核 / Star Core | — | patch：修复 7 项（数组响应 / 电表最后上报 / 概览日均 / 充值负数 / 今日违规 / 日志异常栈脱敏）+ runbook 的 WAL 备份 |
+
+> **patch 版本沿用主版本的代号**（`starcore` 属于 2.0.x 整个系列）；
+> `__version__` 与 `pyproject.toml` 的 `version` 必须跟着 tag 走 ——
+> 2.0.1 发布时漏了这一步，导致 `/healthz` 报的版本与镜像 tag 对不上。
 
 > **为什么 `2.0.0` 而不是 `1.2.0`**：R69 是**破坏性重写** ——
 > 删兼容 shim（Q22）· 换调度（Q14）· 删 Basic Auth（Q21）· 换密码哈希（B1）· 换启动方式（B2）
