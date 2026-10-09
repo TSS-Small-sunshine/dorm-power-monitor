@@ -67,7 +67,14 @@ sudo mkdir -p ./data && sudo chown -R 10001:10001 ./data
 
 ### 从旧版本迁移现有数据（零迁移）
 
-老版本的 `records.db` 可以直接用 —— 表结构没变：
+老版本的 `records.db` 可以直接用 —— 表结构没变。**先自检一下**（1 分钟）：
+
+```bash
+python -m scripts.check_db /path/to/old/records.db --fix
+# 它会在副本上试一遍升级，报告数据是否一行不少；不会动你的原库
+```
+
+然后：
 
 ```bash
 sudo mkdir -p ./data

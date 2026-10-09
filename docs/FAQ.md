@@ -2,6 +2,26 @@
 
 ## 账号与登录
 
+### 我手上那个 `records.db` 是哪一版？能直接用吗
+
+不需要知道版本 —— 让工具告诉你（在**新代码**目录里跑）：
+
+```bash
+python -m scripts.check_db /path/to/records.db          # 只读体检
+python -m scripts.check_db /path/to/records.db --fix    # 在副本上试升级
+
+# Docker 用户（镜像里带着脚本）
+docker compose exec starwatt python -m scripts.check_db /data/records.db
+```
+
+它会报告：`schema_version`、缺哪些表/列、每张表多少行，以及结论
+（能不能直接用、启动时会自动补什么）。**它不会改你的库**：默认只读打开，
+`--fix` 也是先复制再动。
+
+从 1.x 到 2.0，唯一的结构差异是 `users` 表多 2 列
+（`disabled`、`must_change_password`），启动时自动补 —— 数据一行不动。
+完整流程见 [M7_CUTOVER.md](M7_CUTOVER.md#第-0-步先确认你的数据库能用1-分钟)。
+
 ### 忘记管理员密码了怎么办
 
 **故意没有**「网页上输入用户名就重置」的入口 —— 这个系统没有短信/邮件通道，
