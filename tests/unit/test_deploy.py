@@ -64,6 +64,37 @@ class TestDeployFiles:
         for path in (DOCKERFILE, DOCKERIGNORE, COMPOSE, ENTRYPOINT, INSTALL, UNIT):
             assert path.is_file(), f"缺少部署文件：{path.name}"
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "docker-entrypoint.sh",
+            "install.sh",
+            "Dockerfile",
+            "docker-compose.yml",
+            ".dockerignore",
+            "deploy/dorm-web.service",
+        ],
+    )
+    def test_no_crlf(self, name: str) -> None:
+        """CRLF 会让这些文件在 Linux 上以「看不出原因」的方式失败。
+
+        * ``docker-entrypoint.sh`` → ``exec /app/docker-entrypoint.sh:
+          no such file or directory``（shebang 末尾多了个 \\r）
+        * ``install.sh`` → ``/usr/bin/env: 'bash\\r': No such file or directory``
+        * systemd 单元 → ``ExecStart`` 解析出奇怪的值，服务起不来
+
+        这个项目在 Windows 上开发、在 Linux 上跑，所以必须有这道闸。
+        配套的 ``.gitattributes``（``eol=lf``）保证检出时就不会带回 CRLF。
+        """
+        raw = (PROJ / name).read_bytes()
+        assert b"\r\n" not in raw, f"{name} 里有 CRLF —— Linux 上会报 bad interpreter"
+
+    def test_gitattributes_pins_lf_for_scripts(self) -> None:
+        text = (PROJ / ".gitattributes").read_text(encoding="utf-8")
+        assert "*.sh" in text and "eol=lf" in text
+        assert "*.service" in text
+        assert "Dockerfile" in text
+
 
 # ===========================================================================
 # Dockerfile
@@ -170,6 +201,54 @@ class TestCompose:
         source = _read(COMPOSE)
         assert "restart: unless-stopped" in source
         assert "replicas: 1" in source  # 调度器是进程内单例
+
+    def test_can_build_locally_when_no_image_is_published(self) -> None:
+        """⚠️ 官方镜像还没发布时，`docker compose up -d` 必须仍然能跑。
+
+        做法是同时给 ``image:`` 与 ``build:`` —— Compose 本地找不到镜像就现场构建。
+        少了 ``build:``，新用户第一条命令就是「pull access denied」。
+        """
+        source = _read(COMPOSE)
+        assert "image: ghcr.io/" in source
+        assert "build:" in source and "context: ." in source
+
+    def test_default_tag_matches_the_release_tag_scheme(self) -> None:
+        """compose 的默认 tag 必须与 release.yml 产出的 tag 对得上。
+
+        发布侧用 ``type=semver,pattern={{version}}``：推 ``v2.0.0-starcore``
+        会产出 tag ``2.0.0-starcore`` —— 也就是 compose 里的默认值。
+        这两处一旦漂移，用户 `docker compose up -d` 就会去拉一个不存在的 tag。
+        """
+        compose = _read(COMPOSE)
+        default_tag = compose.split("${STARWATT_TAG:-", 1)[1].split("}", 1)[0]
+        assert default_tag == "2.0.0-starcore", default_tag
+        assert "type=semver,pattern={{version}}" in _read(RELEASE)
+
+    def test_image_repository_matches_compose(self) -> None:
+        """release.yml 推的镜像名必须与 compose 默认拉的一致 —— 否则用户拉不到。
+
+        仓库 owner 里有大写字母（TSS-Small-sunshine），而 GHCR 只接受小写，
+        所以 workflow 里必须小写化；这里同时钉住「包名」与「小写化」两件事。
+        """
+        assert "ghcr.io/tss-small-sunshine/starwatt:" in _read(COMPOSE)
+        release = _read(RELEASE)
+        assert "IMAGE_NAME: starwatt" in release
+        assert "tr '[:upper:]' '[:lower:]'" in release
+
+    def test_dockerfile_copy_sources_exist(self) -> None:
+        """Dockerfile 里 COPY 的源路径必须真的存在（否则只有构建时才报错）。"""
+        missing: list[str] = []
+        for line in _read(DOCKERFILE).splitlines():
+            stripped = line.strip()
+            if not stripped.upper().startswith("COPY ") or "--from=" in stripped:
+                continue
+            parts = stripped.split()[1:]
+            for source in parts[:-1]:  # 最后一个是目标
+                if source in (".", "./"):
+                    continue
+                if not (PROJ / source.rstrip("/")).exists():
+                    missing.append(source)
+        assert not missing, f"Dockerfile COPY 的源不存在：{missing}"
 
 
 # ===========================================================================
