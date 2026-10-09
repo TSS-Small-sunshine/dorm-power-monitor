@@ -214,6 +214,56 @@ class TestZeroMigration:
             assert index in names, index
 
 
+class TestCreateAppMigratesTheDatabase:
+    """``create_app()`` 自己就得把库结构补齐。
+
+    演练时发现的真 bug：``db.init()`` 原本只在 ``web.py:startup_once()`` 里跑，
+    而那是 **gunicorn 的 post_fork** 调用的 —— 于是只有 gunicorn 这条启动路径
+    会迁移库结构。拿旧库配新代码、用别的入口启动（`flask run`、waitress、
+    或测试里直接 `create_app()` + 简单 WSGI 服务器）就会：
+
+        sqlite3.OperationalError: no such column: disabled  →  登录 HTTP 500
+
+    看起来像「新版本坏了」，实际是结构没升。切换时最怕这种失败。
+    """
+
+    def test_create_app_upgrades_a_legacy_db(self, settings_override) -> None:
+        db_file = settings_override.db_path
+        _make_legacy_db(db_file)
+        assert "disabled" not in _schema_of(db_file)["users"], "前置条件：应该是旧结构"
+
+        from starwatt.web.factory import create_app
+
+        create_app()  # ← 只建 app；不调用 startup_once
+
+        users = _schema_of(db_file)["users"]
+        assert "disabled" in users
+        assert "must_change_password" in users
+
+    def test_create_app_does_not_create_accounts(self, settings_override) -> None:
+        """但它不该越界：**建号**仍归 startup_once。
+
+        否则每个测试建一次 app 就会凭空多出一个 admin，测试之间互相污染。
+        """
+        db_file = settings_override.db_path
+        _make_legacy_db(db_file)
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+
+        from starwatt.web.factory import create_app
+
+        create_app()
+
+        conn = sqlite3.connect(str(db_file))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            assert count == 0, f"create_app() 不该建号，但 users 里有 {count} 行"
+        finally:
+            conn.close()
+
+
 class TestCheckerTool:
     """``scripts/check_db.py`` —— 用户升级前回答「我这是哪一版」。"""
 
