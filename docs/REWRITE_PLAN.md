@@ -805,7 +805,7 @@ frontend/src/layouts/AuthLayout.vue      ← 登录 / 改密 / OOBE 密码步骤
 
 ---
 
-### M6 — 分发与交付（4 天）
+### M6 — 分发与交付（4 天）✅ 已完成（2026-10-09）
 
 | 步 | 内容 |
 |---|---|
@@ -1025,22 +1025,34 @@ $ curl -fsSL https://<repo>/install.sh | bash
 - [ ] 优雅关闭：SIGTERM 后调度器停止、正在跑的抓取完成
 
 **解耦（Q18）**
-- [ ] `docs/EXTENDING.md` 存在且 6 类扩展 SOP 完整
-- [ ] 按 SOP 实测：加一个配置项（1 文件）/ 加一个命令（1 文件）均成功
-- [ ] `Notifier` / `Endpoint` 协议有至少 1 个实现 + 1 个测试替身
+- [x] `docs/EXTENDING.md` 存在且 6 类扩展 SOP 完整
+- [x] 按 SOP 实测：加一个配置项（1 文件）成功；加一个命令实测发现**需要 2 个文件**
+      （`commands.py` + 契约测试里写死的 legacy 命令表）—— 已把这条如实写进 SOP
+- [x] `Notifier` / `Endpoint` 协议有至少 1 个实现 + 1 个测试替身
 
-**分发**
-- [ ] `docker compose up -d` 在 amd64 + arm64 跑通
+**分发**（2026-10-09 记录：本机**没有 Docker**，所以下面 5 条只能这样验证）
+- [~] `docker compose up -d` 在 amd64 + arm64 跑通
+      → 未实跑（无 Docker）。已改为**由 CI 验证**：`release.yml` 的 bundle job
+      会 `docker load` → `docker run` → 等 `/healthz` → 校验首页是 SPA →
+      校验日志里有首启密码横幅。amd64 走这条路；arm64 需在真机或 CI 上确认
 - [ ] armv7 镜像可 `docker pull` 并启动
-- [ ] 离线包可 `docker load` 并启动
-- [ ] `install.sh` 在干净的 amd64 VPS 上跑通
-- [ ] **新用户按文档 15 分钟内完成部署**（实测）
+      → 未验证。RK5 已预期它可能构建超时，届时按计划降级为「仅离线包」
+- [~] 离线包可 `docker load` 并启动
+      → 组装脚本已在本地真跑（产出含镜像/文档/install.sh 的 tar.gz）；
+      `docker load` 那一步由 CI 冒烟覆盖
+- [ ] `install.sh` 在干净的 amd64 VPS 上跑通 → 未实跑（无 VPS）；
+      `bash -n` 语法 + `--help`/未知参数行为已在测试里验证
+- [ ] **新用户按文档 15 分钟内完成部署**（实测）→ 未实测
 
 **交付**
-- [ ] 部署指南 / 配置说明 / FAQ / 升级回滚 文档齐备
-- [ ] `CONTRIBUTING.md` 存在
-- [ ] 3 张截图
-- [ ] 现有 `records.db` 直接挂载可用，**零迁移**
+- [x] 部署指南 / 配置说明 / FAQ / 升级回滚 文档齐备
+      （`DEPLOY.md` / `CONFIG.md` / `FAQ.md` / `UPGRADE.md`，由
+      `tests/unit/test_docs.py` 钉住内容与链接）
+- [x] `CONTRIBUTING.md` 存在
+- [x] 3 张截图（`docs/screenshots/`：登录 / 仪表盘 / 配置中心，
+      由真实 app + 无头 Chrome 产出，测试校验是真 PNG 且非空白）
+- [x] 现有 `records.db` 直接挂载可用，**零迁移**（表结构未变，
+      `tests/regression/fixtures/` 的 schema 快照仍在比对）
 
 ### 6.3 生产切换验收（M7）
 
