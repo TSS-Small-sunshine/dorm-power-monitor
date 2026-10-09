@@ -79,6 +79,23 @@ class TestStatsContract:
     def test_recharge_is_not_consumption(self) -> None:
         assert ds.stats(_records("remain_increase"))["hourly_used"] is None
 
+    def test_daily_avg_is_never_negative(self) -> None:
+        """充值让 ``remain`` 上升 —— 日均必须是 ``None``，不能是负数。
+
+        📌 真实数据实测：52 度 → 充值 → 152 度，7 天窗口算出 **-15.57**。
+        legacy 的 ``remain_increase`` 向量对日均返回 ``None``（见
+        ``fixtures/algorithms.json``），重写漏了这个判断 —— ``hourly_used``
+        一直有，``daily_avg`` 没有。
+        """
+        rows = [
+            Record(ts="2026-09-29 12:00:00", read_time=None, remain=52.0),
+            Record(ts="2026-10-06 12:00:00", read_time=None, remain=152.0),
+        ]
+        assert ds.stats(rows)["daily_avg"] is None
+        # 净下降时仍然照常计算（别把正常路径一起关掉）
+        rows[1] = Record(ts="2026-10-06 12:00:00", read_time=None, remain=45.0)
+        assert ds.stats(rows)["daily_avg"] == 1.0
+
     def test_daily_avg_needs_a_full_day(self) -> None:
         assert ds.stats(_records("two_1h_apart"))["daily_avg"] is None
         assert ds.stats(_records("seven_days"))["daily_avg"] == 1.0
@@ -257,6 +274,21 @@ class TestLive:
         RecordRepo.insert(Record(ts="2026-10-06 12:00:00", read_time=None, remain=54.0))
         payload = ds.live(today=date(2026, 10, 7))
         assert payload["stats"]["daily_avg"] == pytest.approx(2.0)
+
+    def test_hourly_used_stays_within_the_day(self, tmp_db, frozen_now) -> None:
+        """「近一小时」不能拿 6 天前的记录去算。
+
+        📌 ``live()`` 为了让 ``daily_avg`` 有值而查 7 天窗口，但
+        ``hourly_used`` 必须仍来自 24 小时窗口 —— 否则那张写着
+        「近一小时」的卡片会显示一个 6 天跨度的差值。
+        """
+        RecordRepo.insert(Record(ts="2026-09-30 12:00:00", read_time=None, remain=60.0))
+        RecordRepo.insert(Record(ts="2026-10-06 11:00:00", read_time=None, remain=54.0))
+        payload = ds.live(today=date(2026, 10, 7))
+        # 24 小时窗口里只剩 10-06 11:00 这一条 → 算不出「小时用量」
+        assert payload["stats"]["hourly_used"] is None
+        # 但 7 天窗口里的日均照常（6 度 / 5.96 天 ≈ 1.01 度/天）
+        assert payload["stats"]["daily_avg"] == pytest.approx(1.01)
 
     def test_days_remaining(self, tmp_db, frozen_now) -> None:
         RecordRepo.insert(Record(ts="2026-09-29 12:00:00", read_time=None, remain=44.0))

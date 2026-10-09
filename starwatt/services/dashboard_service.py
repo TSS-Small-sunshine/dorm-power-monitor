@@ -141,7 +141,13 @@ def stats(rows: list[Any]) -> dict[str, Any]:
                 hourly_used = round(value - latest_remain, 2) if value >= latest_remain else None
                 break
 
-    # ---- 日均：跨度 ≥ 1 天才算 ----
+    # ---- 日均：跨度 ≥ 1 天，且窗口内必须**净下降** ----
+    #
+    # 📌 充值会让 ``remain`` 上升 —— 那不是耗电。legacy 的 ``_stats`` 对
+    # 「净上升」返回 ``None``（``fixtures/algorithms.json`` 的
+    # ``remain_increase`` 向量），重写时漏了这个判断：拿真实数据实测
+    # （52 度 → 充值 → 152 度），日均会变成 **-15.57**。
+    # 同一函数的 ``hourly_used`` 一直有这层保护（见上），这里补齐。
     daily_avg: float | None = None
     if len(valid) >= 2:
         oldest_dt = timeutil.parse_stamp(valid[0][0])
@@ -149,7 +155,9 @@ def stats(rows: list[Any]) -> dict[str, Any]:
         if oldest_dt is not None and newest_dt is not None:
             span_days = (newest_dt - oldest_dt).total_seconds() / 86400
             if span_days >= 1:
-                daily_avg = round((valid[0][1] - latest_remain) / span_days, 2)
+                consumed = valid[0][1] - latest_remain
+                if consumed >= 0:  # 净上升 = 充值 → 「算不出来」比负数诚实
+                    daily_avg = round(consumed / span_days, 2)
 
     return {
         "remain": round(latest_remain, 2),
@@ -309,11 +317,18 @@ def live(*, today: date | None = None) -> dict[str, Any]:
     room_id = coerce_str(get_str("last_room_id", ""))
     price = eqprice()
 
-    # 📌 用 **7 天窗口**而不是 24 小时：``stats.daily_avg`` 要求跨度 ≥ 1 天，
-    # 24 小时窗口里永远凑不满 → 概览「日均用量」卡恒显示「—」。
-    # 同一个坑 :func:`days_remaining` 已经修过（见那里的说明），这里补上。
-    rows = RecordRepo.query(hours=DAILY_AVG_HOURS)
+    # 📌 两个窗口各司其职：
+    #   * ``DEFAULT_HOURS``（24h）—— ``remain`` / ``hourly_used`` / ``read_time``。
+    #     卡片写的是「近一小时」，若也用 7 天窗口，会拿 6 天前的记录算出
+    #     一个「小时用量」。
+    #   * ``DAILY_AVG_HOURS``（7d）—— ``daily_avg`` 要求跨度 ≥ 1 天，
+    #     24 小时窗口里永远凑不满 → 概览「日均用量」卡恒显示「—」。
+    #     同一个坑 :func:`days_remaining` 早就修过（见那里的说明），这里补上。
+    rows = RecordRepo.query(hours=DEFAULT_HOURS)
     stat_payload = stats(rows)
+    stat_payload["daily_avg"] = stats(RecordRepo.query(hours=DAILY_AVG_HOURS))[
+        "daily_avg"
+    ]
     latest = rows[-1] if rows else None
 
     breakdown = monthly_projection(
