@@ -294,7 +294,9 @@ jobs:
           set -euo pipefail
           DIR="starwatt-$VERSION-offline"
           mkdir -p "$DIR/images" "$DIR/deploy"
-          mv "starwatt-$VERSION-amd64.tar.gz" "starwatt-$VERSION-arm64.tar.gz" "$DIR/images/"
+          # ⚠️ 必须 cp 而不是 mv：mv 会把独立的 amd64 包搬进离线包，
+          #    于是 Release 上只剩一个产物，而文档里写的是两个（踩过）。
+          cp "starwatt-$VERSION-amd64.tar.gz" "starwatt-$VERSION-arm64.tar.gz" "$DIR/images/"
 
           cp docker-compose.yml .env.example README.md install.sh "$DIR/"
           cp deploy/dorm-web.service "$DIR/deploy/"
