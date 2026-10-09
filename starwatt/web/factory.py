@@ -175,6 +175,21 @@ def create_app(config: dict | None = None) -> Flask:
     if config:
         app.config.update(config)
 
+    # ⚠️ 建表与迁移必须在这里跑，不能只依赖 gunicorn 的 post_fork。
+    #
+    # 背景：``web.py:startup_once()``（由 post_fork 在 **worker 进程**里调用）才做
+    # ``db.init()``，而 ``create_app()`` 刻意保持纯净（测试里不该建号）。
+    # 于是**只有** gunicorn 那条路会迁移库结构，其它入口一律不会 ——
+    # 拿旧库配新代码启动时会变成「登录 500 / no such column: disabled」，
+    # 看起来像新版本坏了，实际是结构没升。
+    #
+    # 所以这里只补上**幂等**的 ``db.init()``（建表 + 加列，不建号、不写默认值、
+    # 不启动调度器）——那些仍然留在 startup_once 里，保持「单实例只做一次」。
+    # 演练时正是这一步抓到的：旧库 + create_app() → 登录 500。
+    from starwatt.db.connection import init as db_init
+
+    db_init()
+
     register_blueprints(app)
     register_spa_fallback(app)
 
