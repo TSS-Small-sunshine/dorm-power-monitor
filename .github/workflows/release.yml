@@ -272,18 +272,25 @@ jobs:
             sleep 2
           done
           echo "--- 容器日志 ---"
-          docker logs starwatt-smoke || true
+          # ⚠️ 先落盘再 grep，不要写 `docker logs ... | grep -q`：
+          #    `grep -q` 命中后立刻退出 → docker 收到 SIGPIPE → 配合
+          #    `set -o pipefail` 整条命令非零。表现是「日志里明明有密码，
+          #    脚本却说没看到」，而且是**随机复现**（取决于谁先结束）——
+          #    和 entrypoint 里那个 `tr | head` 是同一类坑。
+          docker logs starwatt-smoke > /tmp/smoke.log 2>&1 || true
+          cat /tmp/smoke.log
           if [ "$ok" != "1" ]; then
             echo "::error::容器起来了但 /healthz 一直不通"
             exit 1
           fi
 
           # 首启横幅（含随机密码）必须真的打印出来 —— entrypoint 的活证据
-          docker logs starwatt-smoke 2>&1 | grep -q "初始密码" \
+          grep -q "初始密码" /tmp/smoke.log \
             || { echo "::error::没看到首启随机密码横幅"; exit 1; }
 
           # 首页必须返回 SPA（前端产物真的在镜像里，而不是空壳）
-          curl -fsS http://127.0.0.1:5000/ | grep -qi 'id="app"' \
+          curl -fsS http://127.0.0.1:5000/ -o /tmp/index.html
+          grep -qi 'id="app"' /tmp/index.html \
             || { echo "::error::首页不是 SPA —— 前端产物没进镜像？"; exit 1; }
 
           docker rm -f starwatt-smoke
