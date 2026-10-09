@@ -68,6 +68,18 @@ const router = createRouter({
           meta: { title: '配置中心', admin: true },
         },
         {
+          path: 'switches',
+          name: 'admin-switches',
+          component: () => import('@/views/admin/AdminSwitchesView.vue'),
+          meta: { title: '功能开关', admin: true },
+        },
+        {
+          path: 'logging',
+          name: 'admin-logging',
+          component: () => import('@/views/admin/AdminLoggingView.vue'),
+          meta: { title: '日志设置', admin: true },
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('@/views/admin/AdminUsersView.vue'),

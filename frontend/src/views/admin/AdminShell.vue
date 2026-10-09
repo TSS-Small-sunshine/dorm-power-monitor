@@ -19,6 +19,8 @@ const router = useRouter()
 
 const TABS = [
   { name: 'admin-config', label: '配置中心' },
+  { name: 'admin-switches', label: '功能开关' },
+  { name: 'admin-logging', label: '日志' },
   { name: 'admin-users', label: '用户' },
   { name: 'admin-test', label: '连通测试' },
   { name: 'admin-audit', label: '审计日志' },

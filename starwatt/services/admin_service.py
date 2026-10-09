@@ -41,11 +41,21 @@ from starwatt.config_registry import (
 from starwatt.config_registry.portable import export_config, import_config
 from starwatt.config_registry.types import Kind
 from starwatt.db.repositories import AuditRepo, UserRepo
-from starwatt.flags import enabled_flags
+from starwatt.flags import (
+    COMMAND_FLAGS,
+    FLAGS,
+    LAYER_FLAGS,
+    enabled_flags,
+    in_quiet_hours,
+    is_enabled,
+    why_suppressed,
+)
+from starwatt.logging_setup import CATEGORIES, LEVEL_BY_NAME, LOG_FILENAME, registered_secrets
 
 logger = logging.getLogger("starwatt.config")
 
 __all__ = [
+    "FLAG_GROUP_TITLES",
     "TEST_TARGETS",
     "bootstrap_admin",
     "config_export",
@@ -58,8 +68,10 @@ __all__ = [
     "enabled_flags",
     "ensure_defaults",
     "first_run_maintenance",
+    "flags_state",
     "list_audit",
     "list_users",
+    "logging_state",
 ]
 
 #: ``POST /api/admin/config/test`` 支持的测试目标 → 人话标签
@@ -206,6 +218,111 @@ def list_audit(limit: int = 100, action: str | None = None) -> list[dict[str, An
         }
         for entry in AuditRepo.recent(limit=max(1, min(limit, 1000)), action=action)
     ]
+
+
+# ---------------------------------------------------------------------------
+# 功能开关 / 日志的**实时状态**（5.7 / 5.8）
+# ---------------------------------------------------------------------------
+#: 开关三段的人话标题（顺序 = 页面上的顺序）
+FLAG_GROUP_TITLES: tuple[tuple[str, str], ...] = (
+    ("master", "总开关"),
+    ("layer", "告警层（群推送）"),
+    ("command", "命令（私聊机器人）"),
+)
+
+
+def flags_state() -> dict[str, Any]:
+    """全部开关 + **此刻的生效状态**（5.7 的「实时状态提示」）。
+
+    为什么要有这个端点（而不是让前端从 schema 里猜）：开关的父子语义住在
+    :mod:`starwatt.flags`（``parent``），而「某层此刻为什么不推」由
+    :func:`starwatt.flags.why_suppressed` 计算 —— 那是**运行时判断**
+    （总开关 / 分项开关 / 静默时段三选一），前端复现不了，也不该复现。
+
+    Returns:
+        ``{"groups", "flags", "suppressed", "quiet_hours"}``
+    """
+    layer_keys = set(LAYER_FLAGS.values())
+    command_keys = set(COMMAND_FLAGS.values())
+
+    def kind_of(key: str) -> str:
+        if key in layer_keys:
+            return "layer"
+        if key in command_keys:
+            return "command"
+        return "master"
+
+    flags = [
+        {
+            "key": key,
+            "label": flag.label,
+            "parent": flag.parent,
+            "kind": kind_of(key),
+            "enabled": is_enabled(key),
+        }
+        for key, flag in FLAGS.items()
+    ]
+
+    suppressed = []
+    for layer, key in LAYER_FLAGS.items():
+        reason = why_suppressed(layer)
+        if reason:
+            suppressed.append(
+                {"layer": layer, "key": key, "label": FLAGS[key].label, "reason": reason}
+            )
+
+    return {
+        "groups": [{"kind": kind, "title": title} for kind, title in FLAG_GROUP_TITLES],
+        "flags": flags,
+        "suppressed": suppressed,
+        "quiet_hours": in_quiet_hours(),
+    }
+
+
+def logging_state() -> dict[str, Any]:
+    """日志设置的**实时状态**（5.8）：级别 / 类别 / 覆盖 / 格式 / 文件。
+
+    ``effective`` 把「全局级别 + 模块级覆盖」算成一张表 —— 改
+    ``log_overrides`` 时最容易犯的错是「以为生效了其实没有」，这张表直接
+    回答「现在到底几级」。
+
+    Returns:
+        ``{"levels", "categories", "global_level", "format", "overrides",
+        "effective", "file", "masked_secrets"}``
+    """
+    from starwatt.config import get_settings
+    from starwatt.config_registry import get_bool, get_int, get_json, get_str
+
+    raw_overrides = get_json("log_overrides", {}) or {}
+    overrides = {
+        str(key): str(value)
+        for key, value in raw_overrides.items()
+        if str(key) in CATEGORIES  # 拼错的类别直接不显示（后端也不认）
+    }
+    global_level = get_str("log_level", "INFO")
+
+    enabled = get_bool("log_file_enabled", False)
+    log_path = ""
+    if enabled:
+        log_path = str(get_settings().data_dir / "logs" / LOG_FILENAME)
+
+    return {
+        # 级别按数值升序（TRACE → CRITICAL），前端直接照抄顺序
+        "levels": [name for name, _ in sorted(LEVEL_BY_NAME.items(), key=lambda kv: kv[1])],
+        "categories": list(CATEGORIES),
+        "global_level": global_level,
+        "format": get_str("log_format", "text"),
+        "overrides": overrides,
+        "effective": {
+            category: overrides.get(category, global_level) for category in CATEGORIES
+        },
+        "file": {
+            "enabled": enabled,
+            "path": log_path,
+            "retention_days": get_int("log_file_retention_days", 7),
+        },
+        "masked_secrets": registered_secrets(),
+    }
 
 
 # ---------------------------------------------------------------------------
