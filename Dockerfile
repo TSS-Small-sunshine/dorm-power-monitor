@@ -21,7 +21,11 @@
 # -----------------------------------------------------------------------------
 # 阶段 1：前端构建
 # -----------------------------------------------------------------------------
-FROM node:22-alpine AS frontend
+# ⚠️ 必须带 --platform=$BUILDPLATFORM：多架构构建时不带前缀会在**目标架构**
+#    上各跑一次本阶段；arm64 那次是 QEMU 模拟，npm ci + vue-tsc + vite build
+#    能把发布卡死（实测 build 步骤 48 分钟未完成，而同轮更慢的 armv7 腿 9 分钟就过了）。
+#    前端产物与架构无关，在 runner 原生架构上构建一次即可。
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 
 WORKDIR /app
 # 先只拷清单，让 npm ci 这一层能被缓存（改代码不必重装依赖）
