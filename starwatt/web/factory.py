@@ -243,6 +243,21 @@ def create_app(config: dict | None = None) -> Flask:
         static_url_path="/static",
     )
 
+    # ⚠️ 建表必须**先于**任何配置中心读取。
+    #
+    # ``MetaRepo.get()`` 直接 ``SELECT value FROM meta WHERE key = ?``，而
+    # ``db.init()`` 之外的入口没人建这张表 —— 空数据目录（首次启动、或
+    # 任何干净目录）里读配置会当场 ``no such table: meta``。
+    #
+    # 背景：``web.py:startup_once()``（由 post_fork 在 **worker 进程**里调用）才做
+    # ``db.init()``，而 ``create_app()`` 在装配期就要读配置。所以这里补上
+    # **幂等**的 ``db.init()``（建表 + 补列，不建号、不写默认值、不启动调度器）
+    # ——那些仍然留在 startup_once 里，保持「单实例只做一次」。
+    # 演练时正是这一步抓到的：旧库 + create_app() → 登录 500。
+    from starwatt.db.connection import init as db_init
+
+    db_init()
+
     # Q21：SESSION cookie 只走 HttpOnly + SameSite；Secure 与 ProxyFix 由配置决定
     # （审计缺陷 1：``SESSION_COOKIE_SECURE`` 以前从没人写，恒为 False）
     from starwatt.config_registry import get_bool
@@ -263,21 +278,6 @@ def create_app(config: dict | None = None) -> Flask:
     # ProxyFix 必须在处理第一个请求前包好（配置读在应用装配期，改它要重启）
     init_proxy_fix(app)
     _register_security_headers(app)
-
-    # ⚠️ 建表与迁移必须在这里跑，不能只依赖 gunicorn 的 post_fork。
-    #
-    # 背景：``web.py:startup_once()``（由 post_fork 在 **worker 进程**里调用）才做
-    # ``db.init()``，而 ``create_app()`` 刻意保持纯净（测试里不该建号）。
-    # 于是**只有** gunicorn 那条路会迁移库结构，其它入口一律不会 ——
-    # 拿旧库配新代码启动时会变成「登录 500 / no such column: disabled」，
-    # 看起来像新版本坏了，实际是结构没升。
-    #
-    # 所以这里只补上**幂等**的 ``db.init()``（建表 + 加列，不建号、不写默认值、
-    # 不启动调度器）——那些仍然留在 startup_once 里，保持「单实例只做一次」。
-    # 演练时正是这一步抓到的：旧库 + create_app() → 登录 500。
-    from starwatt.db.connection import init as db_init
-
-    db_init()
 
     register_blueprints(app)
     register_spa_fallback(app)

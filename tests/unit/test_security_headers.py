@@ -218,7 +218,13 @@ class TestTrustProxyOffByDefault:
         isolated_app.config["TRUST_PROXY"] = False
         assert factory.init_proxy_fix(isolated_app) is False
 
-    def test_create_app_enables_proxy_fix_when_configured(self) -> None:
+    def test_create_app_enables_proxy_fix_when_configured(self, tmp_db) -> None:
+        """``create_app()`` 必须在**不依赖**任何已存在的库的前提下可用。
+
+        这里显式要 ``tmp_db``：本用例原本裸调 ``create_app()``，于是读配置时
+        用的是默认库路径 —— 开发机上有 ``records.db`` 所以本地永远绿，CI 上
+        （干净检出）当场 ``no such table: meta``。
+        """
         app = factory.create_app(config={"TRUST_PROXY": True})
         assert getattr(app.wsgi_app, "_starwatt_proxy_fix", False)
 

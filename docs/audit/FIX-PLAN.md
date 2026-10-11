@@ -15,7 +15,7 @@
 
 > `-o addopts=''` 是必需的：仓库 `addopts` 自带 `-q`，命令行再加 `-q` 等于 `-qq`，pytest 在 `-qq` 下**不打印统计尾行**（容易被误读成「没结果」）。
 
-## 二、已修（已全部落地，共 12 项）
+## 二、已修（已全部落地，共 13 项）
 
 | # | 缺陷 | 关键改动 | 行为变化 |
 |---|---|---|---|
@@ -30,6 +30,7 @@
 | 9 | `?include_secrets=1` 明文返回凭据且不写审计 | `starwatt/web/blueprints/admin.py:83-85` `_wants_secrets()`、`:115-141` `config_get`、`:167-190` `config_export` | 明文读取一律写 `config.read_secrets` 审计 + `Cache-Control: no-store`；导出写 `config.export` 并用 `details.include_secrets` 区分两种导出；功能不变（仍返回明文） |
 | 10 | SSRF 黑名单漏 IPv4-mapped / NAT64（`is_blocked_ip("::ffff:127.0.0.1") == False`） | `starwatt/scraper/ssrf.py:97-101`、`:181-202` `_normalize_mapped()`、`:205-224` | 地址按「原样 + 归一化 IPv4」双候选校验，`::ffff:127.0.0.1`、`64:ff9b::/96` 映射的内网地址现在会被拦。**有意偏离**原方案：`::ffff:0:0/96` **整段**拉黑会连 `::ffff:8.8.8.8` 一起误杀，因此只用于归一化 |
 | 11 | `/healthz` 只证明进程活着（不碰 DB/调度器） | `starwatt/web/blueprints/health.py:176-200` 新增 `/healthz/deep`、`:78-97` DB 可写探针、`:107-133` 调度器探针、`:136-147` 抓取状态（非必需） | `/healthz` 保持轻量不变；`/healthz/deep` 任一关键探针失败返回 503。**架构约束**：`scripts/ast_guard.py` R4 禁止 `starwatt/**` 回引顶层 `web`，故调度器探针经 `app.extensions[SCHEDULER_PROBE_KEY]` 注入 |
+| 13 | `create_app()` 在读配置之前没建表 → **空数据目录首次启动**（新装用户 / CI）当场 `no such table: meta`。本机有 `records.db` 所以本地永远绿，属本次安全批次引入的回归，由 CI 抓到 | `starwatt/web/factory.py:246-259` 把幂等 `db_init()` 提到 `get_bool()` 之前（原本在应用装配之后）；`tests/unit/test_security_headers.py:221` 改用 `tmp_db` 夹具，不再依赖环境里已有的库 | 干净数据目录也能启动；CI 等价条件（删掉本机 `records.db`）复跑：**1707 passed / exit 0** |
 | 12 | 一次性初始密码文件用完不删（磁盘上长期留明文） | `starwatt/auth/service.py` `PASSWORD_FILE_NAME` + `_wipe_password_file()`，`ensure_bootstrap_admin()` 建号成功后调用；`docker-entrypoint.sh:69-79` 改为 `umask 077` 落盘 + `chmod 600` | 建号成功即删文件（删不掉只 WARNING）；写不进只读卷也不触发 `set -e`；没截到日志时可用 `starwatt-docker.sh password` 取回 |
 
 ## 三、你的决策（4 条，均已按你的答复执行）
