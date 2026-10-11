@@ -432,6 +432,9 @@ class TestOpenidAndDiscovery:
         assert get_str("last_room_id") == "uuid-9"
         assert client.calls[0][0] == "GET"
         assert FINDUSER_PATH in client.calls[0][1]
+        # Fix A 回归：发现请求必须**恰好一次非空 openid**（裸路径拿不到 roomId，
+        # `?openid=` 空值则返回别人的房间）。
+        assert "openid=o-1" in client.calls[0][1]
 
     def test_room_id_config_skips_discovery(self, tmp_db, frozen_now) -> None:
         _configure()

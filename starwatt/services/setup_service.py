@@ -36,7 +36,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from starwatt.config_registry import get_bool, get_str, set_state
-from starwatt.scraper.client import FINDUSER_PATH, ScrapeError
+from starwatt.scraper.client import ScrapeError, fetch_finduser_page
 from starwatt.scraper.endpoints import F1Live, discover_room
 from starwatt.scraper.ssrf import SsrfError, assert_public_url
 
@@ -177,6 +177,10 @@ def verify(
     Returns:
         ``{"ok", "room_id", "room_label", "remain", "read_time", "error"}``
         —— **绝不**回显 openid（Q20）。
+
+    副作用（H3）：本次发现到非空房间名时顺手回填 ``room_label`` 配置
+    （见 :func:`_backfill_room_label`）—— 前端走的就是本函数。回填失败
+    只记日志，**不**改变返回值与 ``ok`` 语义。
     """
     from starwatt.scraper.service import ScrapeContext, build_client
 
@@ -210,7 +214,9 @@ def verify(
         ctx = ScrapeContext(client=http, openid=credential, room_id=(room_id or "").strip())
         label: str | None = None
         if not ctx.room_id:
-            info = discover_room(ctx.get(FINDUSER_PATH))
+            # A1 房间发现：凭据由 `finduser_query` 拼进查询串；没有 openid
+            # 就**一个请求都不发**（`?openid=` 空值会返回**别人**的房间）。
+            info = discover_room(fetch_finduser_page(ctx, credential))
             if not info.room_id:
                 return {
                     "ok": False,
@@ -218,12 +224,16 @@ def verify(
                     "room_label": None,
                     "remain": None,
                     "read_time": "",
-                    "error": "凭据无效，或学校页面里找不到房间号（可手工填写房间 ID）",
+                    "error": "openid 无效或已过期，请手工填写房间 ID",
                 }
             ctx.room_id, label = info.room_id, info.room_label
 
         rows = F1Live().fetch(ctx)
         row = rows[0] if rows else {}
+        # H3：UI 真正调用的是本函数（前端只调 /api/setup/parse-url 与
+        # /api/setup/verify），所以回填放在这里 —— ``commit()`` 的那条路径
+        # 没有调用方，只对将来的接线生效。
+        _backfill_room_label(label)
         return {
             "ok": True,
             "room_id": ctx.room_id,
@@ -264,18 +274,59 @@ def _sanitize(text: str, secret: str) -> str:
 # ---------------------------------------------------------------------------
 # 落库
 # ---------------------------------------------------------------------------
+def _backfill_room_label(room_label: str | None) -> bool:
+    """把房间发现拿到的名字回填进 ``room_label`` 配置（H3），返回是否写入。
+
+    推送卡片标题靠它：``notify.policies.room_label()`` →
+    ``notify.card_builder``（为空则回落「宿舍电量监控」）。
+
+    规则：**只在当前还没有值时写** —— 用户在配置中心手填过的显示名优先
+    （与 ``ensure_defaults`` 的「不覆盖用户值」同一条约定）。房间名是展示
+    信息，写入失败（例如超出 ``len:0..32``）只记日志，绝不让调用方
+    （:func:`verify` / :func:`commit`）失败或改变返回值。
+    """
+    label = (room_label or "").strip()
+    if not label or get_str("room_label", "").strip():
+        return False
+
+    from starwatt.services import admin_service
+
+    try:
+        extra = admin_service.config_update({"room_label": label})
+    except Exception as exc:  # noqa: BLE001 —— 回填不该拖垮调用方
+        logger.warning("房间名未写入：%s", type(exc).__name__)
+        return False
+
+    if "room_label" in extra["applied"]:
+        logger.info("房间名已回填：%s", label)
+        return True
+    logger.warning("房间名未写入：%s", extra["errors"].get("room_label", "未知原因"))
+    return False
+
+
 def commit(
     *,
     openid: str,
     room_id: str = "",
     eqprice: float | None = None,
     base_url: str = "",
+    room_label: str | None = None,
 ) -> dict[str, Any]:
     """把解析 / 验证结果写进配置（经注册表校验 + 审计）。
+
+    Args:
+        room_label: 本次房间发现（``discover_room`` / ``verify``）拿到的
+            房间名；非空且 ``room_label`` 配置**还没有值**时回填 ——
+            推送卡片标题靠它（``notify.policies.room_label()``）。
 
     Returns:
         :func:`starwatt.services.admin_service.config_update` 的产物，
         另加 ``{"room_id": ...}``。
+
+    ⚠️ UI 当前**不**调用本端点（前端只调 ``/api/setup/parse-url`` 与
+    ``/api/setup/verify``；唯一服务端调用方 ``web/blueprints/setup.py``
+    也不传 ``room_label``），所以房间名回填**实际生效的路径是
+    :func:`verify`**。这里保留是为了将来前端接上本端点时自动生效。
     """
     from starwatt.services import admin_service
 
@@ -293,6 +344,10 @@ def commit(
     if room_id and "dorm_room_id" not in result["errors"]:
         set_state("last_room_id", room_id)
     result["room_id"] = room_id
+
+    if not result["errors"] and _backfill_room_label(room_label):
+        result["applied"].append("room_label")
+
     logger.info(
         "自助配置已保存：%d 项（%s）",
         len(result["applied"]),

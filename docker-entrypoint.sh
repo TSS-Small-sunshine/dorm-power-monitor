@@ -23,6 +23,9 @@ set -euo pipefail
 DATA_DIR="${DORM_DATA_DIR:-/data}"
 DB_FILE="${DB_PATH:-$DATA_DIR/records.db}"
 SECRET_FILE="$DATA_DIR/.flask_secret_key"
+#: 一次性初始密码的落盘位置（应用建号后删除；名字与 starwatt/auth/service.py 一致）
+PASSWORD_FILE_NAME=".initial-admin-password"
+PASSWORD_FILE="$DATA_DIR/$PASSWORD_FILE_NAME"
 
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 
@@ -63,6 +66,17 @@ if [ ! -f "$DB_FILE" ] && [ -z "${BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
 fi
 
 if [ "$FIRST_RUN" = "1" ]; then
+    # 除了打印，还**落盘一份**到数据卷。理由：容器日志会被轮转，而
+    # `docker compose logs | grep 初始密码` 要求用户会翻中文日志 —— 没截到就没了。
+    # 文件可以被重复读取（`./starwatt-docker.sh password`），
+    # 直到应用建号成功后把它删掉（用后即焚，见 starwatt/auth/service.py）。
+    umask 077
+    if printf '%s' "$BOOTSTRAP_ADMIN_PASSWORD" >"$PASSWORD_FILE" 2>/dev/null; then
+        chmod 600 "$PASSWORD_FILE" 2>/dev/null || true
+    else
+        echo "[entrypoint] ⚠️ 无法写入 $PASSWORD_FILE —— 请立刻记下下面的密码"
+    fi
+
     cat <<EOF
 
 ============================================================
@@ -72,8 +86,12 @@ if [ "$FIRST_RUN" = "1" ]; then
   初始密码  ：${BOOTSTRAP_ADMIN_PASSWORD}
 
   ⚠️ 这串密码只在这里打印一次，请立刻记下。
-     首次登录会被强制修改密码。
+     首次登录会被强制修改密码（改完密码文件即被删除）。
      也可以用环境变量 BOOTSTRAP_ADMIN_PASSWORD 自己指定。
+
+  没记下来？再取一次：
+     ./starwatt-docker.sh password
+     或  docker compose exec starwatt cat /data/${PASSWORD_FILE_NAME}
 ============================================================
 
 EOF

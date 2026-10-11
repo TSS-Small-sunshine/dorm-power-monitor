@@ -33,9 +33,21 @@ class _LogRecorder:
 
 
 class TestBuildScheduler:
-    def test_registers_scrape_and_l3_gate(self, tmp_db) -> None:
+    def test_registers_scrape_l3_gate_and_maintenance(self, tmp_db) -> None:
         sched = sch.build_scheduler()
-        assert [job.id for job in sched.get_jobs()] == [sch.JOB_SCRAPE, sch.JOB_L3_GATE]
+        assert [job.id for job in sched.get_jobs()] == [
+            sch.JOB_SCRAPE,
+            sch.JOB_L3_GATE,
+            sch.JOB_MAINTENANCE,
+        ]
+
+    def test_maintenance_runs_daily_at_fixed_hour(self, tmp_db) -> None:
+        """🩺 审计 stability：清理 job 每天 03:30 CST 跑一次（只涨不删修复）。"""
+        sched = sch.build_scheduler()
+        job = next(j for j in sched.get_jobs() if j.id == sch.JOB_MAINTENANCE)
+        fields = {f.name: str(f) for f in job.trigger.fields}
+        assert fields["hour"] == str(sch.MAINTENANCE_HOUR)
+        assert fields["minute"] == str(sch.MAINTENANCE_MINUTE)
 
     def test_l3_gate_runs_every_minute(self, tmp_db) -> None:
         sched = sch.build_scheduler()

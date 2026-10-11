@@ -31,6 +31,7 @@ DOCKERIGNORE = PROJ / ".dockerignore"
 COMPOSE = PROJ / "docker-compose.yml"
 ENTRYPOINT = PROJ / "docker-entrypoint.sh"
 INSTALL = PROJ / "install.sh"
+HELPER = PROJ / "starwatt-docker.sh"
 UNIT = PROJ / "deploy" / "dorm-web.service"
 
 
@@ -61,7 +62,7 @@ needs_bash = pytest.mark.skipif(BASH is None, reason="本机没有 bash，跳过
 # ===========================================================================
 class TestDeployFiles:
     def test_all_present(self) -> None:
-        for path in (DOCKERFILE, DOCKERIGNORE, COMPOSE, ENTRYPOINT, INSTALL, UNIT):
+        for path in (DOCKERFILE, DOCKERIGNORE, COMPOSE, ENTRYPOINT, INSTALL, HELPER, UNIT):
             assert path.is_file(), f"缺少部署文件：{path.name}"
 
     @pytest.mark.parametrize(
@@ -69,6 +70,7 @@ class TestDeployFiles:
         [
             "docker-entrypoint.sh",
             "install.sh",
+            "starwatt-docker.sh",
             "Dockerfile",
             "docker-compose.yml",
             ".dockerignore",
@@ -230,8 +232,8 @@ class TestCompose:
     def test_default_tag_matches_the_release_tag_scheme(self) -> None:
         """compose 的默认 tag 必须与 release.yml 产出的 tag 对得上。
 
-        发布侧用 ``type=semver,pattern={{version}}``：推 ``v2.0.2-starcore``
-        会产出 tag ``2.0.2-starcore`` —— 也就是 compose 里的默认值。
+        发布侧用 ``type=semver,pattern={{version}}``：推 ``v2.0.3-starcore``
+        会产出 tag ``2.0.3-starcore`` —— 也就是 compose 里的默认值。
         这两处一旦漂移，用户 `docker compose up -d` 就会去拉一个不存在的 tag。
 
         ⚠️ 每次发版都要把这里的期望值和 compose 的默认值一起更新
@@ -239,7 +241,7 @@ class TestCompose:
         """
         compose = _read(COMPOSE)
         default_tag = compose.split("${STARWATT_TAG:-", 1)[1].split("}", 1)[0]
-        assert default_tag == "2.0.2-starcore", default_tag
+        assert default_tag == "2.0.3-starcore", default_tag
         assert "type=semver,pattern={{version}}" in _read(RELEASE)
 
     def test_image_repository_matches_compose(self) -> None:
@@ -311,6 +313,19 @@ class TestEntrypoint:
         assert ".flask_secret_key" in source
         assert "chmod 600" in source
 
+    def test_persists_the_one_time_password_for_retrieval(self) -> None:
+        """初始密码除了打印，还要**落盘** —— 否则没截到日志就永久丢失。
+
+        `docker compose logs | grep 初始密码` 要求用户会翻中文日志，而且日志会被
+        轮转；落盘之后 `starwatt-docker.sh password` 可以反复取，直到应用建号
+        成功后把它删掉（用后即焚，见 `starwatt/auth/service.py`）。
+        """
+        source = _read(ENTRYPOINT)
+        assert "PASSWORD_FILE" in source
+        assert ".initial-admin-password" in source
+        # 这是一条可用凭据：不能让同组/其他用户读
+        assert 'chmod 600 "$PASSWORD_FILE"' in source
+
     def test_password_rule_covers_every_class(self) -> None:
         """生成的密码必须过后端强度校验，否则 bootstrap 建号会被拒。"""
         assert "Aa1!" in _read(ENTRYPOINT), "生成规则里必须含大写、数字、特殊字符"
@@ -377,6 +392,30 @@ class TestEntrypoint:
         env.pop("FLASK_SECRET_KEY", None)
         out = self._run(env)
         assert "MyOwn-Pass1!" not in out, "用户显式给了密码就不该再生成/打印一个"
+
+    @needs_bash
+    def test_first_run_writes_the_password_to_the_volume(self, tmp_path: Path) -> None:
+        """真跑一遍：落盘的那份必须与横幅上打印的那份**完全一致**。
+
+        不一致的后果很隐蔽 —— 用户按文件里的密码登录，被拒；再去看日志，
+        日志里那串才是对的。两边同源就不会有这个问题。
+        """
+        data = tmp_path / "data"
+        env = dict(os.environ)
+        env.update({"DORM_DATA_DIR": str(data), "DB_PATH": str(data / "records.db")})
+        env.pop("FLASK_SECRET_KEY", None)
+        env.pop("BOOTSTRAP_ADMIN_PASSWORD", None)
+
+        out = self._run(env)
+        password_file = data / ".initial-admin-password"
+        assert password_file.is_file(), "首启必须把一次性密码落盘到数据卷"
+
+        printed = ""
+        for line in out.splitlines():
+            if "初始密码" in line:
+                printed = line.split("：", 1)[-1].strip()
+        assert printed, out
+        assert password_file.read_text(encoding="utf-8") == printed
 
     @staticmethod
     def _run(env: dict) -> str:
@@ -463,6 +502,115 @@ class TestInstallScript:
         )
         assert result.returncode != 0
         assert "未知参数" in (result.stdout or "")
+
+
+# ===========================================================================
+# starwatt-docker.sh（Docker 助手）
+# ===========================================================================
+class TestDockerHelper:
+    """这个脚本是 Docker 用户的**唯一入口** —— 它错了，用户没有第二条路。
+
+    它存在的理由就是四类反复出现的坑（每条对应下面一个断言）：
+
+    * 初始密码只打印一次，没截到就永久丢失 → 落盘 + `password` 可反复取
+    * 升级要手改 compose 里的 tag，而 compose 是 `curl` 下来的 → tag 落在 `.env`
+    * `cp records.db` 备份 WAL 库会漏掉未 checkpoint 的事务 → 走 sqlite backup API
+    * 升级忘了备份 → `upgrade` 自动先备份
+    """
+
+    def test_strict_mode(self) -> None:
+        assert "set -euo pipefail" in _read(HELPER)
+
+    def test_never_overwrites_env(self) -> None:
+        """🔑 铁律 1（与 install.sh 同源）：`.env` 里的密钥丢了 = 加密凭据全解不开。
+
+        用位置判断：「写 .env」只能发生在「文件不存在」的分支里。
+        """
+        source = _read(HELPER)
+        assert 'if [ -f "$ENV_FILE" ]; then' in source
+        assert "沿用已存在的 .env" in source
+        assert source.index('cat >"$ENV_FILE"') > source.index("沿用已存在的 .env")
+
+    def test_generates_a_secret_key(self) -> None:
+        assert "FLASK_SECRET_KEY=$(_hex 32)" in _read(HELPER)
+
+    def test_upgrade_writes_the_tag_into_env(self) -> None:
+        """升级只改 `.env` 一行 —— 改 compose 会被下一次 `curl` 覆盖回去。"""
+        source = _read(HELPER)
+        assert 'env_set STARWATT_TAG "$target"' in source
+
+    def test_upgrade_backs_up_first(self) -> None:
+        """升级前必须自动备份，且备份要发生在改 tag / 拉镜像之前。"""
+        source = _read(HELPER)
+        assert "升级前自动备份" in source
+        assert source.index("cmd_backup") < source.index('env_set STARWATT_TAG "$target"')
+
+    def test_backup_uses_the_sqlite_online_api(self) -> None:
+        """🔑 铁律 2：WAL 库不能用 `cp` 备份（旧服务在写时会漏最后几个事务）。
+
+        镜像里**没有 sqlite3 命令行**，所以走容器内 Python 的 backup API
+        —— 容器一定有 Python，宿主机有没有 sqlite3 却不一定。
+        """
+        source = _read(HELPER)
+        assert "src.backup(dst)" in source
+        assert "sqlite3" in source
+        assert "cp /data/records.db" not in source, "不许用 cp 备份 WAL 数据库"
+
+    def test_backup_verifies_row_counts(self) -> None:
+        """备份没验过等于没备份 —— 必须回显两侧行数并比对。"""
+        source = _read(HELPER)
+        assert "rows src=" in source
+        assert "行数一致" in source
+
+    def test_restore_requires_confirmation(self) -> None:
+        """🔑 铁律 3：恢复会覆盖数据，必须二次确认，且旧库先留一份。"""
+        source = _read(HELPER)
+        assert "read -r answer" in source
+        assert '"yes"' in source
+        assert "records.db.bak" in source
+
+    def test_password_file_name_matches_the_application(self) -> None:
+        """一次性密码文件名的唯一真相在 Python 侧；两个脚本必须与它一致。
+
+        漂移的症状是「密码明明落盘了，但永远取不到」—— 而这条链路只在容器里
+        跑，开发机上不会报错，所以必须由测试盯着。
+        """
+        from starwatt.auth.service import PASSWORD_FILE_NAME
+
+        assert PASSWORD_FILE_NAME == ".initial-admin-password"
+        for path in (HELPER, ENTRYPOINT):
+            assert PASSWORD_FILE_NAME in _read(path), f"{path.name} 里的文件名漂移了"
+
+    @needs_bash
+    def test_syntax(self) -> None:
+        result = subprocess.run([BASH, "-n", str(HELPER)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+
+    @needs_bash
+    def test_help_works_without_docker(self) -> None:
+        """`--help` 必须在**没装 Docker** 的机器上也能跑（开发机与 CI 都没有）。"""
+        result = subprocess.run(
+            [BASH, str(HELPER), "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert result.returncode == 0
+        stdout = result.stdout or ""
+        assert "install" in stdout and "upgrade" in stdout and "backup" in stdout
+
+    @needs_bash
+    def test_unknown_command_fails_loudly(self) -> None:
+        result = subprocess.run(
+            [BASH, str(HELPER), "definitely-not-a-command"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert result.returncode != 0
+        assert "未知命令" in (result.stdout or "")
 
 
 # ===========================================================================
@@ -655,7 +803,13 @@ class TestReleaseWorkflow:
 
     def test_offline_bundle_carries_docs_and_installer(self) -> None:
         source = _read(RELEASE)
-        for item in ("docker-compose.yml", ".env.example", "install.sh", "deploy/dorm-web.service"):
+        for item in (
+            "docker-compose.yml",
+            ".env.example",
+            "install.sh",
+            "starwatt-docker.sh",
+            "deploy/dorm-web.service",
+        ):
             assert item in source, item
 
     def test_standalone_image_survives_the_bundle_step(self) -> None:

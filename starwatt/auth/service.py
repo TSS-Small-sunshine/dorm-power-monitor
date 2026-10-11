@@ -35,6 +35,7 @@ logger = logging.getLogger("starwatt.auth.service")
 
 __all__ = [
     "ENV_BOOTSTRAP_PASSWORD",
+    "PASSWORD_FILE_NAME",
     "AuthResult",
     "authenticate",
     "change_password",
@@ -52,6 +53,14 @@ __all__ = [
 #: install.sh 写入的 bootstrap 密码键名（用后即焚）
 ENV_BOOTSTRAP_PASSWORD = "BOOTSTRAP_ADMIN_PASSWORD"
 _ENV_BOOTSTRAP_USERNAME = "BOOTSTRAP_ADMIN_USERNAME"
+
+#: 一次性初始密码的落盘文件名（Docker entrypoint 写、建号成功后删）。
+#:
+#: 为什么要有这个文件：容器日志会被轮转，而「初始密码只打印一次」意味着
+#: 用户没截到就彻底没了 —— 只能删库重装。落盘后 `starwatt-docker.sh password`
+#: 可以反复取，直到建号成功把它删掉。
+#: ⚠️ 名字必须与 `docker-entrypoint.sh` 的 `PASSWORD_FILE_NAME` 一致。
+PASSWORD_FILE_NAME = ".initial-admin-password"
 
 
 @dataclass(frozen=True)
@@ -289,6 +298,31 @@ def _wipe_env_key(key: str) -> bool:
         return False
 
 
+def _wipe_password_file() -> bool:
+    """删掉一次性初始密码文件（用后即焚）。
+
+    Docker entrypoint 会把生成的密码写到数据卷里，好让用户没截到日志时还能取回
+    （``starwatt-docker.sh password``）。建号成功之后它就没有存在价值了 ——
+    继续留着等于把一个**可用的管理员密码**长期摆在磁盘上。
+
+    删不掉不算错误（比如卷只读）：留一条 WARNING，不要因此让启动失败。
+    """
+    try:
+        from starwatt.config import get_settings
+
+        path = get_settings().data_dir / PASSWORD_FILE_NAME
+    except Exception:  # noqa: BLE001 —— 配置都读不到时，静默跳过
+        return False
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("无法删除一次性密码文件 %s：%s", path, exc)
+        return False
+    logger.info("已删除一次性密码文件 %s（用后即焚）", path)
+    return True
+
+
 def ensure_bootstrap_admin() -> User | None:
     """首次启动建号（幂等）。
 
@@ -298,7 +332,8 @@ def ensure_bootstrap_admin() -> User | None:
     2. ``.env`` 里有 ``BOOTSTRAP_ADMIN_PASSWORD``
     3. 该密码通过强度校验
 
-    建号后立即把该行从 ``.env`` 抹掉，并设 ``must_change_password=1``。
+    建号后立即把该行从 ``.env`` 抹掉、把 entrypoint 落盘的
+    ``.initial-admin-password`` 删掉，并设 ``must_change_password=1``。
     """
     if UserRepo.count() > 0:
         return None
@@ -325,6 +360,7 @@ def ensure_bootstrap_admin() -> User | None:
     )
     os.environ.pop(ENV_BOOTSTRAP_PASSWORD, None)
     _wipe_env_key(ENV_BOOTSTRAP_PASSWORD)
+    _wipe_password_file()
     write_audit(
         "bootstrap.admin_created",
         user_id=user.id,

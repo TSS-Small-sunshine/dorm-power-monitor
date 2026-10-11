@@ -17,8 +17,11 @@ CSRF 与 Cookie
 
 * 登录**不需要** CSRF（此时还没有会话，攻击者拿不到任何已登录上下文）
 * 登出 / 改密需要 CSRF（:func:`starwatt.auth.decorators.require_csrf`）
-* 会话 Cookie 一律 ``HttpOnly`` + ``SameSite=Lax``；``Secure`` 由
-  :func:`starwatt.web.factory.create_app` 按环境决定（本地 HTTP 调试要关掉）
+* 会话 Cookie 一律 ``HttpOnly`` + ``SameSite=Lax``；``Secure`` 由配置
+  ``session_cookie_secure`` 决定（**默认关闭**）——
+  ``starwatt.web.factory.create_app`` 把它写进 ``SESSION_COOKIE_SECURE``，
+  本模块只读。默认关是**故意**的：``docker compose`` 直接映射的 HTTP
+  端口上一旦强制 ``Secure``，浏览器根本不回传 Cookie，登录会直接失效。
 """
 from __future__ import annotations
 
@@ -38,7 +41,16 @@ __all__ = ["bp", "set_session_cookie"]
 
 
 def _client_ip() -> str | None:
-    """真实客户端 IP（``ProxyFix`` 已处理 ``X-Forwarded-For``）。"""
+    """本次请求的对端 IP（用于锁定与审计）。
+
+    ⚠️ 这是 ``request.remote_addr`` —— **直连对端**。反向代理后面它会是
+    代理自己的地址（例如 ``127.0.0.1``），``X-Forwarded-For`` **默认不信任**
+    （否则客户端可以随便伪造来源 IP，把失败锁定打散到无数个假 IP 上）。
+
+    确实有受信任的反代时，打开配置 ``trust_proxy`` ——
+    ``create_app()`` 会给 ``app.wsgi_app`` 包上 Werkzeug ``ProxyFix``
+    （只取 1 跳），此后 ``remote_addr`` 才是真实客户端 IP。
+    """
     return request.remote_addr
 
 

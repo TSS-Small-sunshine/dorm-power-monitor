@@ -496,6 +496,35 @@ class TestBootstrap:
         assert service.ensure_bootstrap_admin() is None  # 第二次 no-op
         assert db.UserRepo.count() == 1
 
+    def test_wipes_the_one_time_password_file(self, tmp_db, monkeypatch, tmp_path) -> None:
+        """entrypoint 落盘的一次性密码，建号成功后必须删掉（用后即焚）。
+
+        这个文件解决的是「初始密码没截到就永久丢失」—— ``starwatt-docker.sh
+        password`` 靠它反复取回。但它本身就是一个**可用的管理员密码**：
+        建号之后继续留在磁盘上，等于长期摆着一个后门。
+        """
+        from starwatt import config as cfg
+
+        monkeypatch.setattr(cfg, "ENV_FILE", tmp_path / "boot.env")
+        monkeypatch.setenv(service.ENV_BOOTSTRAP_PASSWORD, GOOD_PASSWORD)
+
+        password_file = cfg.get_settings().data_dir / service.PASSWORD_FILE_NAME
+        password_file.write_text(GOOD_PASSWORD, encoding="utf-8")
+        assert password_file.is_file()
+
+        assert service.ensure_bootstrap_admin() is not None
+        assert not password_file.exists(), "建号后必须删掉一次性密码文件"
+
+    def test_missing_password_file_is_not_an_error(self, tmp_db, monkeypatch, tmp_path) -> None:
+        """没有那个文件（裸机安装、或用户自己指定了密码）不该影响建号。"""
+        from starwatt import config as cfg
+
+        monkeypatch.setattr(cfg, "ENV_FILE", tmp_path / "boot.env")
+        monkeypatch.setenv(service.ENV_BOOTSTRAP_PASSWORD, GOOD_PASSWORD)
+
+        assert service.ensure_bootstrap_admin() is not None
+        assert db.UserRepo.count() == 1
+
 
 # ===========================================================================
 # csrf.py —— 无状态 HMAC

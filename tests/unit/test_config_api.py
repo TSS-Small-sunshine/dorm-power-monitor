@@ -511,8 +511,19 @@ class TestOobe:
         assert body["completed"] is False
 
     def test_reaching_last_step_completes(self, admin_client) -> None:
-        """B5：``/complete`` 合并进 ``advance``。"""
-        for _ in range(5):
+        """B5：``/complete`` 合并进 ``advance``。
+
+        ⚠️ 原版是「5 次裸 ``advance``」——那条路径**固化**了 school 步
+        ``required`` 形同虚设的 bug（见 ``test_oobe_required.py``）。
+        先填 ``dorm_openid``（school 是唯一声明 required 的步）再走完，
+        本用例要测的「走到最后一步 = 完成」保持不变。
+        """
+        admin_client.post("/api/oobe/advance", json={"direction": "next"})  # → school
+        admin_client.post(
+            "/api/oobe/advance",
+            json={"direction": "next", "values": {"dorm_openid": "last-step-openid"}},
+        )
+        for _ in range(2):
             body = admin_client.post(
                 "/api/oobe/advance", json={"direction": "next"}
             ).get_json()

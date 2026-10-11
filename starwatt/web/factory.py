@@ -20,13 +20,32 @@
 
 Dockerfile 的 ``HEALTHCHECK`` 与 ``deploy/dorm-web.service`` 都依赖它。
 它**不碰数据库、不碰网络** —— 探活端点自己变成故障源是最糟糕的设计。
+（需要「DB 可写 / 调度器在跑」的深度就绪探测见
+``/healthz/deep``，由 :mod:`starwatt.web.blueprints.health` 提供。）
+
+安全响应头
+==========
+
+:func:`_register_security_headers` 给**每个**响应补上 nosniff / DENY /
+Referrer-Policy / Permissions-Policy。**不加 CSP**（Vue SPA 的内联样式与
+``modulepreload`` 很容易被 CSP 打坏，需要真实浏览器验证后再单开一轮）。
+HSTS **只在请求本身是 HTTPS 时**才发 —— 纯 HTTP 部署发这个头毫无意义，
+还会把浏览器钉到 https 上。
+
+``ProxyFix`` 与 ``trust_proxy``
+==============================
+
+``X-Forwarded-For`` 是**客户端可伪造**的头：无条件信任它等于让攻击者
+随便伪造来源 IP，登录失败锁定与 SSRF 判断会一起失效。所以默认
+``trust_proxy=false``，只有 :func:`init_proxy_fix`（按配置）
+才会启用 Werkzeug 的 ``ProxyFix``。
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 from starwatt.config import get_settings
 from starwatt.web.blueprints import ALL_BLUEPRINTS
@@ -35,13 +54,26 @@ from starwatt.web.blueprints.health import APP_VERSION
 __all__ = [
     "APP_VERSION",
     "RESERVED_PREFIXES",
+    "SECURITY_HEADERS",
     "create_app",
+    "init_proxy_fix",
     "register_blueprints",
     "register_spa_fallback",
     "register_startup_tasks",
 ]
 
 logger = logging.getLogger("starwatt.web")
+
+#: 每个响应都补的安全头（值固定，不受请求影响）
+SECURITY_HEADERS: dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+}
+
+#: HSTS 头（**仅 HTTPS 请求**才发；见 ``_register_security_headers``）
+HSTS_HEADER = ("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
 
 def _static_dir() -> str | None:
@@ -148,11 +180,59 @@ def register_startup_tasks(app: Flask) -> dict:
             return {}
 
 
+def _register_security_headers(app: Flask) -> None:
+    """给每个响应补安全头（审计缺陷 2）。
+
+    * 只补**缺失**的头 —— 已有同名头（例如某个视图自己设了 nosniff）
+      不覆盖、不重复添加，避免出现重复头
+    * HSTS **只在** ``request.is_secure`` 为真时发：HTTP 部署发 HSTS
+      等于告诉浏览器「以后都走 https」，而它根本没有 https
+    """
+    hsts_name, hsts_value = HSTS_HEADER
+
+    @app.after_request
+    def _security_headers(response):
+        for name, value in SECURITY_HEADERS.items():
+            if name not in response.headers:
+                response.headers[name] = value
+        if request.is_secure and hsts_name not in response.headers:
+            response.headers[hsts_name] = hsts_value
+        return response
+
+
+def init_proxy_fix(app: Flask) -> bool:
+    """``trust_proxy=true`` 时用 Werkzeug ``ProxyFix`` 包住 ``app.wsgi_app``。
+
+    为什么默认不包：``X-Forwarded-For`` 可被客户端伪造，无条件信任它会让
+    ``request.remote_addr`` 变成攻击者任意填的值 —— 登录失败锁定与 SSRF
+    判断都会跟着失真（见 ``docs/audit/security.md`` F-04）。
+
+    只取 **1 跳**（``x_for=x_proto=x_host=1``）：面对多级反代时宁可少信一层，
+    也不要把整条用户可控的头链当真相。
+
+    Returns:
+        是否真的包上了（配置关闭时为 ``False``）。
+    """
+    if not app.config.get("TRUST_PROXY", False):
+        return False
+    if getattr(app.wsgi_app, "_starwatt_proxy_fix", False):
+        return True  # 幂等：重复调用不叠加
+
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+    app.wsgi_app._starwatt_proxy_fix = True  # type: ignore[attr-defined]
+    logger.info("已启用 ProxyFix（trust_proxy=true）：信任 1 跳 X-Forwarded-*")
+    return True
+
+
 def create_app(config: dict | None = None) -> Flask:
     """构造并返回 Flask 应用。
 
     Args:
         config: 测试注入的额外配置（``app.config.update``）；``None`` 表示不覆盖。
+            同名键优先于配置中心读到的值（``SESSION_COOKIE_SECURE`` /
+            ``TRUST_PROXY`` 都走这里）。
 
     Returns:
         已注册七个蓝图（含平台事件订阅）的 :class:`flask.Flask` 实例。
@@ -163,17 +243,26 @@ def create_app(config: dict | None = None) -> Flask:
         static_url_path="/static",
     )
 
-    # Q21：SESSION cookie 只走 HttpOnly + SameSite，且密钥来自启动配置
+    # Q21：SESSION cookie 只走 HttpOnly + SameSite；Secure 与 ProxyFix 由配置决定
+    # （审计缺陷 1：``SESSION_COOKIE_SECURE`` 以前从没人写，恒为 False）
+    from starwatt.config_registry import get_bool
+
     settings = get_settings()
     app.config.update(
         SECRET_KEY=settings.flask_secret_key,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=get_bool("session_cookie_secure", False),
+        TRUST_PROXY=get_bool("trust_proxy", False),
         JSON_AS_ASCII=False,
         MAX_CONTENT_LENGTH=4 * 1024 * 1024,  # 配置导入等 POST 的体积上限
     )
     if config:
         app.config.update(config)
+
+    # ProxyFix 必须在处理第一个请求前包好（配置读在应用装配期，改它要重启）
+    init_proxy_fix(app)
+    _register_security_headers(app)
 
     # ⚠️ 建表与迁移必须在这里跑，不能只依赖 gunicorn 的 post_fork。
     #

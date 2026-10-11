@@ -88,6 +88,19 @@ BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("2001:db8::/32"),  # 文档用
 )
 
+#: IPv4 映射 / NAT64 前缀 —— **按映射出的 IPv4 判定**，不整段拉黑
+#:
+#: ``::ffff:0:0/96`` 与 ``64:ff9b::/96`` 都承载**公网** IPv4
+#: （``::ffff:8.8.8.8`` 就是 8.8.8.8），整段拉黑会误伤合法内网代理地址。
+#: 但它们写出来的私有地址（``::ffff:127.0.0.1`` / ``64:ff9b::169.254.169.254``）
+#: 会被操作系统真正路由到那个 IPv4 —— 所以先归一化再判 IPv4 黑名单。
+IPV4_MAPPED_PREFIX = ipaddress.ip_network("::ffff:0:0/96")
+NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+MAPPED_PREFIXES: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    IPV4_MAPPED_PREFIX,
+    NAT64_PREFIX,
+)
+
 #: 明确禁止的主机名（小写精确匹配）
 _BLOCKED_HOSTNAMES = frozenset({
     "localhost",
@@ -165,13 +178,51 @@ def check_host_shape(hostname: str) -> None:
 # ---------------------------------------------------------------------------
 # L3 —— 解析后的 IP
 # ---------------------------------------------------------------------------
+def _normalize_mapped(addr):
+    """把 IPv6 里的 **IPv4 映射 / NAT64 地址**还原成 IPv4（否则黑名单会被绕过）。
+
+    ``::ffff:127.0.0.1`` 与 ``64:ff9b::127.0.0.1``（NAT64）在
+    ``ipaddress`` 里都是 ``IPv6Address``，**不会**落进任何 IPv4 网段，
+    于是 ``is_blocked_ip("::ffff:127.0.0.1")`` 曾经返回 ``False``。
+
+    这两类地址送到具有 IPv6 栈的操作系统上时会被真正路由到对应 IPv4 ——
+    也就是说「用 IPv6 写法」就能访问回环 / 内网 / 云元数据。所以先在
+    归一化后的 IPv4 上判一次，再判原始地址。
+
+    注意 ``ipaddress`` 只对 ``::ffff:0:0/96`` 填 ``ipv4_mapped``；
+    ``64:ff9b::/96``（NAT64）**没有** ``ipv4_mapped`` 属性，其内嵌 IPv4
+    就是低 32 位，必须自己取出来（``64:ff9b::7f00:1`` → ``127.0.0.1``）。
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return addr
+    if addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    if addr in NAT64_PREFIX:
+        return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    return addr
+
+
 def is_blocked_ip(ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """该 IP 是否落在禁止网段内（解析不了 → 视为不安全）。"""
+    """该 IP 是否落在禁止网段内（解析不了 → 视为不安全）。
+
+    判定顺序：先看是不是 IPv4 映射 / NAT64 写法，是则**按映射出的 IPv4**
+    再判一次（``::ffff:127.0.0.1`` → ``127.0.0.1`` → 命中 ``127.0.0.0/8``）。
+    见 :data:`MAPPED_PREFIXES` 与 :func:`_normalize_mapped`。
+    """
     try:
         addr = ipaddress.ip_address(ip) if isinstance(ip, str) else ip
     except ValueError:
         return True
-    return any(addr in net for net in BLOCKED_NETWORKS)
+    candidates = {addr}
+    if isinstance(addr, ipaddress.IPv6Address) and any(
+        addr in prefix for prefix in MAPPED_PREFIXES
+    ):
+        candidates.add(_normalize_mapped(addr))
+    return any(
+        candidate in net
+        for candidate in candidates
+        for net in BLOCKED_NETWORKS
+    )
 
 
 def resolve_ips(hostname: str) -> list[str]:

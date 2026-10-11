@@ -45,23 +45,31 @@ B3 三道防线（缺一不可）
 from __future__ import annotations
 
 import logging
+import time
+from datetime import timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from starwatt.config_registry import get_int
-from starwatt.timeutil import CST
+from starwatt import config_registry
+from starwatt.config_registry import get_bool, get_int
+from starwatt.timeutil import CST, now_cst, to_stamp
 
 logger = logging.getLogger("starwatt.scheduler")
 
 __all__ = [
     "DEFAULT_INTERVAL_SEC",
+    "DEFAULT_RETENTION_DAYS",
+    "DEFAULT_VACUUM_ROWS",
     "JOB_L3_GATE",
+    "JOB_MAINTENANCE",
     "JOB_SCRAPE",
+    "MAINTENANCE_HOUR",
     "MISFIRE_GRACE_SEC",
     "build_scheduler",
     "l3_gate_job",
+    "maintenance_job",
     "scrape_job",
     "shutdown_scheduler",
 ]
@@ -71,6 +79,19 @@ JOB_SCRAPE = "scrape"
 
 #: L3 报表门控任务 id（每分钟检查日报 / 周报 / 月报是否到点）
 JOB_L3_GATE = "l3_gate"
+
+#: 每日数据清理任务 id（保留期删除 + WAL/VACUUM 回收）
+JOB_MAINTENANCE = "maintenance"
+
+#: 每日清理的触发时刻（CST）—— 凌晨低峰，且避开整点备份
+MAINTENANCE_HOUR = 3
+MAINTENANCE_MINUTE = 30
+
+#: ``records_retention_days`` 读不到时的兜底（注册表默认值也是 180）
+DEFAULT_RETENTION_DAYS = 180
+
+#: ``vacuum_min_deleted_rows`` 读不到时的兜底（注册表默认值也是 20000）
+DEFAULT_VACUUM_ROWS = 20000
 
 #: ``scrape_interval_sec`` 读不到时的兜底（注册表默认值也是 600）
 DEFAULT_INTERVAL_SEC = 600
@@ -155,6 +176,129 @@ def l3_gate_job() -> None:
             logger.exception("L3 报表 %s 推送失败（已兜住）", kind)
 
 
+def _int_config(key: str, default: int) -> int:
+    """读注册表里的整数配置，**读不到就回落默认值**。
+
+    容错理由同 :func:`_interval_seconds`：``meta`` 表可能还没建好，
+    不能让清理任务的配置读取把调度线程弄死。
+    """
+    try:
+        return int(get_int(key, default))
+    except Exception:  # noqa: BLE001 —— 读配置失败不该中断清理
+        logger.warning("读取 %s 失败，回落默认 %s", key, default)
+        return default
+
+
+def _bool_config(key: str, default: bool) -> bool:
+    """读注册表里的布尔配置，读不到回落默认值。"""
+    try:
+        return bool(get_bool(key, default))
+    except Exception:  # noqa: BLE001 —— 同上
+        logger.warning("读取 %s 失败，回落默认 %s", key, default)
+        return default
+
+
+def _db_size_mb() -> float:
+    """DB 文件当前大小（MB）；读不到返回 ``-1.0``。"""
+    try:
+        from pathlib import Path
+
+        from starwatt.db.connection import db_path
+
+        return Path(db_path()).stat().st_size / 1024 / 1024
+    except Exception:  # noqa: BLE001 —— 只是日志里的一个数字
+        return -1.0
+
+
+def maintenance_job() -> None:
+    """每日数据清理 + WAL/VACUUM 回收（只涨不删修复）。
+
+    🩺 审计 stability：``records`` 约 5.3 万行/年（采集间隔调到 60s 则约
+    52 万行/年），而 ``delete_before`` / ``purge_expired`` / ``purge_before``
+    全都没有生产调用者、``VACUUM`` / ``wal_checkpoint`` 命中 0 次 —— 数据
+    只涨不删。这里**复用**既有删除函数（不自建 SQL），把保留期策略接上。
+
+    干的活（顺序有讲究）::
+
+        1. 读配置（关闭则直接返回）
+        2. dashboard_service.cleanup_before(days)          → records
+        3. FailedAttemptRepo.purge_before(cutoff)          → failed_attempts
+        4. SessionRepo.purge_expired()                     → sessions
+        5. dashboards 已删过 → wal_checkpoint(TRUNCATE)     → 回收 -wal
+        6. 累计删除行数 ≥ 阈值 → vacuum()                   → 归还空闲页
+        7. 一条 INFO 日志：删了多少行 / 各类多少 / 耗时 / DB 大小
+
+    📌 **VACUUM 不每天跑**：重建整库，DB 越大越慢且要约 2 倍磁盘空间。
+    用「累计删除行数」阈值（``vacuum_min_deleted_rows``）触发，计数持久化在
+    ``vacuum_pending_rows`` 里跨重启累计。WAL checkpoint 则每次清理都跑
+    —— 它只截断 ``-wal``，代价极小。
+
+    📌 ``wal_checkpoint(TRUNCATE)`` 在拿不到写锁时**静默返回**（SQLite 行为），
+    所以「有并发写」不会让清理判失败，下一次再试即可。
+
+    线程级兜底同 :func:`scrape_job`：配置读不到、SQLite 报错、VACUUM 被占用
+    —— 一律只记日志，绝不外抛（调度线程与其它 job 必须活着）。
+    """
+    from starwatt.db import repositories as repo
+    from starwatt.services import dashboard_service
+
+    try:
+        if not _bool_config("retention_enabled", True):
+            logger.info("数据清理已关闭（retention_enabled=false），跳过")
+            return
+
+        days = max(1, _int_config("records_retention_days", DEFAULT_RETENTION_DAYS))
+        attempts_days = max(
+            1, _int_config("failed_attempts_retention_days", 30)
+        )
+        threshold = max(0, _int_config("vacuum_min_deleted_rows", DEFAULT_VACUUM_ROWS))
+
+        started = time.monotonic()
+        removed = 0
+        # 逐项独立兜底：records 清理失败不该连带跳过会话/失败记录清理
+        try:
+            removed += dashboard_service.cleanup_before(days)
+        except Exception:  # noqa: BLE001 —— 见上
+            logger.exception("保留期清理 records 失败（已兜住）")
+        cutoff = to_stamp(now_cst() - timedelta(days=attempts_days))
+        try:
+            removed += repo.FailedAttemptRepo.purge_before(cutoff)
+        except Exception:  # noqa: BLE001
+            logger.exception("保留期清理 failed_attempts 失败（已兜住）")
+        try:
+            removed += repo.SessionRepo.purge_expired()
+        except Exception:  # noqa: BLE001
+            logger.exception("清理过期会话失败（已兜住）")
+
+        try:
+            repo.wal_checkpoint("TRUNCATE")
+        except Exception:  # noqa: BLE001 —— WAL 回收失败不影响清理结果
+            logger.warning("WAL checkpoint 失败（忽略）", exc_info=True)
+
+        pending = _int_config("vacuum_pending_rows", 0) + removed
+        do_vacuum = threshold > 0 and pending >= threshold
+        if do_vacuum:
+            try:
+                repo.vacuum()
+                pending = 0
+            except Exception:  # noqa: BLE001 —— VACUUM 失败下次再试
+                logger.exception("VACUUM 失败（已兜住，下次清理重试）")
+        try:
+            config_registry.set_state("vacuum_pending_rows", pending)
+        except Exception:  # noqa: BLE001 —— 只是记账，失败不该报错
+            logger.warning("写入 vacuum_pending_rows 失败（忽略）", exc_info=True)
+
+        elapsed = time.monotonic() - started
+        logger.info(
+            "数据清理完成：删除 %d 行（保留 %s 天），累计待 VACUUM %d 行，"
+            "耗时 %.2fs，VACUUM=%s，DB %.1f MB",
+            removed, days, pending, elapsed, "已执行" if do_vacuum else "跳过",
+            _db_size_mb(),
+        )
+    except Exception:  # noqa: BLE001 —— 见 docstring：调度线程必须活着
+        logger.exception("数据清理崩溃（已兜住，调度器继续运行）")
+
+
 def build_scheduler() -> BackgroundScheduler:
     """构造调度器（**不启动**）。
 
@@ -185,7 +329,23 @@ def build_scheduler() -> BackgroundScheduler:
         name="L3 报表门控",
         replace_existing=True,
     )
-    logger.info("调度器已装配：job=%s 间隔=%ds，job=%s 每分钟", JOB_SCRAPE, interval, JOB_L3_GATE)
+    # 数据清理：每天 03:30（保留期删除 + WAL/VACUUM 回收）
+    # 📌 用 CronTrigger 而不是 IntervalTrigger：清理必须落在**低峰固定时刻**，
+    # 且每天一次即可；保留天数与开关由 job 运行时读注册表，改完即时生效。
+    scheduler.add_job(
+        maintenance_job,
+        CronTrigger(
+            hour=MAINTENANCE_HOUR, minute=MAINTENANCE_MINUTE, timezone=CST
+        ),
+        id=JOB_MAINTENANCE,
+        name="数据清理与回收",
+        replace_existing=True,
+    )
+    logger.info(
+        "调度器已装配：job=%s 间隔=%ds，job=%s 每分钟，job=%s 每天 %02d:%02d",
+        JOB_SCRAPE, interval, JOB_L3_GATE, JOB_MAINTENANCE,
+        MAINTENANCE_HOUR, MAINTENANCE_MINUTE,
+    )
     return scheduler
 
 

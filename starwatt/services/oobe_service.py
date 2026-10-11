@@ -174,12 +174,26 @@ def _clamp_step(value: Any) -> int:
     return max(0, min(step, LAST_INDEX))
 
 
+def _missing_required(step: Step, values: dict[str, Any]) -> tuple[str, ...]:
+    """本步 ``required`` 里还没填的键（顺序同 ``required``）。"""
+    return tuple(
+        key for key in step.required if not str(values.get(key) or "").strip()
+    )
+
+
 def _is_done(step: Step, values: dict[str, Any]) -> bool:
     """某步是否已填完（``required`` 全部非空）。
 
     📌 secret 值在 ``values`` 里是脱敏的 ``••••1234`` —— 非空即视为已填。
     """
-    return all(str(values.get(key) or "").strip() for key in step.required)
+    return not _missing_required(step, values)
+
+
+def _required_message(key: str) -> str:
+    """必需项缺失时的中文提示（风格同配置校验的 ``errors`` 文案）。"""
+    setting = registry.get(key)
+    label = setting.label if setting is not None else key
+    return f"必填项「{label}」不能为空"
 
 
 def step_payload(step: Step, values: dict[str, Any]) -> dict[str, Any]:
@@ -249,6 +263,9 @@ def advance(
     看不见，而向导最后还会把整个流程标记成「已完成」。最典型的后果是
     ``dorm_openid`` 从来没写进去，用户以为配好了、抓取却永远起不来。
     后退不受影响（要允许用户回去改前面的步骤）。
+
+    同一道门里还检查本步的 ``required``（:func:`_is_done`）—— 缺项时同样
+    不前进、不标记完成。后退（``direction="prev"``）与显式 ``skip`` 不受限。
     """
     from starwatt.services import admin_service
 
@@ -261,6 +278,21 @@ def advance(
         payload = {key: value for key, value in values.items() if key in allowed}
         if payload:
             saved = admin_service.config_update(payload)
+
+    if direction != "prev" and not skip and step.required:
+        # 🔑 必需项没填 → **不推进、不置 completed**。``errors`` 与
+        # ``config_update`` 同形，前端按 ``result.saved.errors`` 显示到字段上。
+        # 没有这道门：用户从没填 openid 也能一路「下一步」走完，服务端还会
+        # 把 ``oobe_completed`` 置 True —— 调度器随后拿着空 openid 永远抓不到
+        # 数据，界面却显示「已完成」。
+        # 📌 用**已落库**的值判定（不是本次提交的 values）：库里已配好
+        # openid 时不必每一步都重填。``skip`` 是用户显式跳过（前端对
+        # ``required`` 非空的步不显示「跳过」按钮），仍然放行。
+        current_values = all_values(
+            kind=Kind.CONFIG, include_secrets=False, include_defaults=True
+        )
+        for key in _missing_required(step, current_values):
+            saved["errors"].setdefault(key, _required_message(key))
 
     if direction == "prev":
         target = max(0, current - 1)

@@ -79,6 +79,56 @@ def resolve_secret() -> str:
     return get_str("feishu_secret", "")
 
 
+def _link_context(response: Any) -> Any:
+    """给业务错误造的 :class:`requests.HTTPError` 挂一个 ``response``。
+
+    与 HTTP 错误走**同一种异常类型**（``requests.RequestException``）——
+    ``raise_on_error=True`` 的调用方（OOBE「发送测试消息」）本来就按
+    ``requests`` 的异常族处理，不必为业务错误认第二种类型。
+    """
+    try:
+        response.status_code = 200  # HTTP 层确实是 200，问题在业务码
+        response.content = b""
+        response.headers = {}
+        response.url = ""
+    except Exception:  # noqa: BLE001 —— 假 response 不允许赋值时不该影响判定
+        pass
+    return response
+
+
+def _json_error(response: Any) -> tuple[str, str] | None:
+    """解析 webhook 响应体，返回 ``(错误消息, 原始片段)``；成功返回 ``None``。
+
+    **为什么必须看响应体**：飞书在「限流 / 机器人被移出群 / 签名错误」时
+    返回的是 **HTTP 200 + ``code != 0``**。只看 HTTP 码会把这类失败记成
+    「推送成功」，告警静默全丢（来自仓库审计报告 stability/security）。
+    ``{"code": 0}`` 才是成功 —— 与 :mod:`starwatt.notify.qq` 的
+    ``payload.get("code")`` 判定同一套语义。
+
+    返回 ``None`` 的唯一条件是：响应体是合法 JSON 且**没有任何**业务码字段
+    （老式自定义机器人只回 ``Extra``/``StatusCode``，这里不误判为失败）。
+    非 JSON 响应体一律**判失败**并保留 200 字符内的原始片段 —— 解析失败
+    绝不能崩，也绝不能假装成功。
+    """
+    try:
+        payload = response.json()
+    except ValueError:  # 含 json.JSONDecodeError —— 非 JSON 响应
+        return "响应体不是合法 JSON", str(getattr(response, "text", ""))[:200]
+
+    if isinstance(payload, dict):
+        # 飞书自定义机器人两种响应体并存：``code`` 与 ``StatusCode`` /
+        # ``status_code``（新版 / 老版）。都判，避免漏检。
+        for field in ("code", "StatusCode", "status_code"):
+            if field in payload:
+                business_code = payload[field]
+                if business_code in (0, "0"):
+                    return None
+                message = payload.get("msg") or payload.get("message") or ""
+                return f"code={business_code} msg={message}", str(payload)[:200]
+        return None  # 老式机器人只回 Extra：「没有码」不等于失败
+    return "响应体不是 JSON 对象", str(payload)[:200]
+
+
 def _group_push_enabled() -> bool:
     """群推送总开关（``push_group_enabled``）是否打开。
 
@@ -141,6 +191,21 @@ def _post(
         logger.error("飞书推送失败：%s", exc)
         if raise_on_error:
             raise
+        return False
+
+    failure = _json_error(response)
+    if failure is not None:
+        detail, raw = failure
+        logger.error(
+            "飞书推送失败（HTTP %s 但业务未成功）：%s；原始响应：%s",
+            getattr(response, "status_code", "?"),
+            detail,
+            raw,
+        )
+        if raise_on_error:
+            raise requests.HTTPError(
+                f"飞书推送业务错误：{detail}", response=_link_context(response)
+            )
         return False
 
     logger.info("飞书推送成功（msg_type=%s）", payload.get("msg_type", "?"))

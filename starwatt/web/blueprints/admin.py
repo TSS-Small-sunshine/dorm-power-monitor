@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, make_response, request
 
 from starwatt.auth.decorators import current_user, require_csrf
 from starwatt.services import admin_service, auth_service
@@ -80,6 +80,11 @@ def _audit(action: str, target: str | None = None, details: dict | None = None) 
     )
 
 
+def _wants_secrets() -> bool:
+    """``?include_secrets=1`` 是否被请求（``1`` / ``true`` / ``yes``）。"""
+    return request.args.get("include_secrets") in ("1", "true", "yes")
+
+
 def _result(result: dict[str, Any]):
     """service 的统一响应 → HTTP。
 
@@ -110,9 +115,30 @@ def config_schema():
 @bp.get("/config")
 @admin_access
 def config_get():
-    """当前配置值（secret 默认脱敏）。"""
-    include_secrets = request.args.get("include_secrets") in ("1", "true", "yes")
-    return jsonify(admin_service.config_values(include_secrets=include_secrets))
+    """当前配置值（secret 默认脱敏；``?include_secrets=1`` 才回明文）。
+
+    明文读取**必须留审计**（审计缺陷 3）：这条路径以前不写审计，
+    而它一次就能吐出 ``dorm_openid`` / ``feishu_app_secret`` / ``qq_*_secret``
+    / ``api_internal_token`` 全部明文。响应加 ``Cache-Control: no-store``，
+    避免中间缓存或浏览器把凭据留在磁盘上。
+    """
+    include_secrets = _wants_secrets()
+    body = admin_service.config_values(include_secrets=include_secrets)
+    if include_secrets:
+        user = current_user()
+        _audit(
+            "config.read_secrets",
+            target=getattr(user, "username", None),
+            details={
+                "include_secrets": True,
+                "username": getattr(user, "username", None),
+                "ip": request.remote_addr,
+                "source": "config.read",
+            },
+        )
+    response = make_response(jsonify(body))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @bp.put("/config")
@@ -141,11 +167,27 @@ def config_test():
 @bp.get("/config/export")
 @admin_access
 def config_export():
-    """导出配置（``?include_secrets=1`` 才带明文凭据）。"""
-    include_secrets = request.args.get("include_secrets") in ("1", "true", "yes")
+    """导出配置（``?include_secrets=1`` 才带明文凭据）。
+
+    与 ``GET /api/admin/config`` 同一套留痕要求：明文导出写
+    ``config.export``（``details.include_secrets`` 区分明文 / 脱敏），
+    响应同样 ``Cache-Control: no-store``。
+    """
+    include_secrets = _wants_secrets()
     payload = admin_service.config_export(include_secrets=include_secrets)
-    _audit("config.export", details={"include_secrets": include_secrets})
-    return jsonify(payload)
+    user = current_user()
+    _audit(
+        "config.export",
+        target=getattr(user, "username", None),
+        details={
+            "include_secrets": include_secrets,
+            "username": getattr(user, "username", None),
+            "ip": request.remote_addr,
+        },
+    )
+    response = make_response(jsonify(payload))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @bp.post("/config/import")

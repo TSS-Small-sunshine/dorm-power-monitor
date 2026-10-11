@@ -21,7 +21,7 @@ from starwatt import logging_setup as ls
 
 # 假凭据**拼装**而成，且变量名不含敏感词 —— 否则本文件会被自己的
 # 凭据扫描器（scripts/secret_scan.py）命中（自指陷阱）。
-FAKE_CRED = "FAKopenid0000000000000" + "WXYZ"
+FAKE_CRED = "FAKopenid0000000" + "00000WXYZ"
 
 
 @pytest.fixture(autouse=True)

@@ -20,7 +20,7 @@ M1 做全量常量审计：``grep`` 魔法数字 → 每一个都要有归属。
 告警阈值  低电三档 / 离线判定 / stale 判定 / 违规冷却
 推送（群）总开关 / webhook(secret) / 各层开关 / 时间 / 静默时段 / 接收人
 机器人    总开关 / app_id / app_secret(secret) / 校验与加密密钥 / 9 个命令
-认证      session 时长 / 锁定策略 / 密码策略 / public_readonly
+认证      session 时长 / Cookie Secure / 信任反代头 / 锁定策略 / 密码策略 / public_readonly
 日志      全局级别 / 模块级覆盖 / 格式 / 文件轮转
 高级      api_internal_token(secret) / 备份 / DB 路径（只读展示）
 ======  ==============================================================
@@ -62,6 +62,7 @@ QQ = "机器人（QQ）"
 AUTH = "认证"
 LOG = "日志"
 ADVANCED = "高级"
+MAINT = "数据维护"
 
 GROUP_ORDER: tuple[str, ...] = (
     SITE,
@@ -73,6 +74,7 @@ GROUP_ORDER: tuple[str, ...] = (
     AUTH,
     LOG,
     ADVANCED,
+    MAINT,
 )
 
 GROUPS: dict[str, str] = {
@@ -85,6 +87,7 @@ GROUPS: dict[str, str] = {
     AUTH: "登录与会话策略",
     LOG: "运行日志",
     ADVANCED: "高级（改动需谨慎）",
+    MAINT: "历史数据保留与数据库回收",
 }
 
 # ---------------------------------------------------------------------------
@@ -439,6 +442,22 @@ _AUTH_SETTINGS: tuple[Setting, ...] = (
         "lockout_minutes", "锁定时长（分钟）", AUTH, T.INT, 15,
         validate="1..1440",
     ),
+    cfg(
+        "session_cookie_secure", "会话 Cookie 只走 HTTPS（Secure）", AUTH, T.BOOL,
+        False,
+        help="🔒 默认关闭。开启后登录 Cookie 带 Secure 属性，浏览器只在 https 下发送 —— "
+             "docker compose 直接映射 HTTP 端口时开启会让**登录直接失效**，"
+             "确认自己真的用 HTTPS 再打开",
+        requires_restart=True,
+    ),
+    cfg(
+        "trust_proxy", "信任反向代理头（X-Forwarded-*）", AUTH, T.BOOL, False,
+        help="🔒 默认关闭。仅在确实有受信任的反向代理时打开：启用后 Werkzeug ProxyFix "
+             "会信任 X-Forwarded-For / X-Forwarded-Proto（只取最近一跳），"
+             "客户端 IP 与 request.is_secure 都取自这些头。直连暴露时打开会让攻击者"
+             "伪造来源 IP，削弱登录锁定与 SSRF 判断",
+        requires_restart=True,
+    ),
 )
 
 
@@ -543,6 +562,55 @@ _QQ_SETTINGS: tuple[Setting, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# 数据维护（保留期清理 + WAL/VACUUM 回收）
+# ---------------------------------------------------------------------------
+# 🩺 审计 stability 发现：``records`` 约 5.3 万行/年（采集间隔调小到 60s
+# 则约 52 万行/年）**只涨不删** —— ``delete_before`` / ``purge_expired`` /
+# ``purge_before`` 三个删除函数都齐全，却**没有任何生产调用者**，
+# ``VACUUM`` / ``wal_checkpoint`` 全仓库命中 0 次。
+#
+# ⚠️ 这一组是**运行时可改、改完即时生效**的：清理 job 每次运行都重读注册表
+# （与 ``scrape_interval_sec`` 由 ``IntervalTrigger`` 动态取值同一思路），
+# 所以**不加** ``requires_restart`` —— 避免 ``scrape_interval_sec`` 那种
+# 「改了不生效也不提示重启」的坑。
+#
+# 📌 保留天数默认取**保守**值 180 天：一年内要看的同比数据靠 ``daily_elec``
+# 汇总表（F2 每日用电，本身长期保留），原始 ``records`` 只服务近半年的
+# 曲线与告警，180 天既躲开「删太多」的懊悔，也比不清理好一个数量级。
+_MAINT_SETTINGS: tuple[Setting, ...] = (
+    cfg(
+        "retention_enabled", "每日数据清理", MAINT, T.BOOL, True,
+        help="每天 03:30 删除保留期外的历史记录并回收 WAL；关闭后数据只涨不删",
+    ),
+    cfg(
+        "records_retention_days", "抓取记录保留天数", MAINT, T.INT, 180,
+        help="早于该天数的 records / daily_elec / violations / pays 会被删除；"
+             "默认 180 天（约 2.6 万行）",
+        validate="30..3650", depends_on="retention_enabled",
+    ),
+    cfg(
+        "failed_attempts_retention_days", "失败登录记录保留天数", MAINT, T.INT, 30,
+        help="登录失败审计只对近期锁定有意义，默认 30 天",
+        validate="1..365", depends_on="retention_enabled",
+    ),
+    # 📌 为什么 VACUUM 不每天跑：它重建整库，DB 越大越慢且需要约 2 倍磁盘
+    # 空间。只有「累计删除行数」到阈值才值得跑一次（见 scheduler.maintenance_job）。
+    cfg(
+        "vacuum_min_deleted_rows", "VACUUM 触发阈值（累计删除行数）", MAINT,
+        T.INT, 20000,
+        help="累计删除行数达到该值后，在当日清理末尾额外跑一次 VACUUM；"
+             "设为极大值等价于「永不 VACUUM」",
+        validate="0..100000000", advanced=True,
+        depends_on="retention_enabled",
+    ),
+    state(
+        "vacuum_pending_rows", "距上次 VACUUM 的累计删除行数", MAINT, T.INT, 0,
+        help="由清理 job 维护，只读", advanced=True,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 _ALL: tuple[Setting, ...] = (
@@ -555,6 +623,7 @@ _ALL: tuple[Setting, ...] = (
     + _AUTH_SETTINGS
     + _LOG_SETTINGS
     + _ADVANCED_SETTINGS
+    + _MAINT_SETTINGS
 )
 
 #: ``key -> Setting``（唯一真相）

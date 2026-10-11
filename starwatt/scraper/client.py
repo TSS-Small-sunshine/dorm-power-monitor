@@ -38,7 +38,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 
@@ -53,6 +53,8 @@ __all__ = [
     "HttpResult",
     "ScrapeError",
     "SchoolClient",
+    "fetch_finduser_page",
+    "finduser_query",
     "same_host",
 ]
 
@@ -74,6 +76,59 @@ _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 #: ``finduser`` 的完整路径 —— **Referer 必须指向它**，否则 WAF 会拒绝。
 #: 这里是唯一真相：``endpoints.py`` 的 A1 房间发现也复用这个常量。
 FINDUSER_PATH = "/campus/webchat/dormEmRealRead/finduser"
+
+
+def finduser_query(openid: str) -> str:
+    """``finduser`` 的**请求路径**：把 openid 拼进查询串（已 URL 编码）。
+
+    📌 2026-10 对真实站点实测（同一 UA）：
+
+    ==================================  ==========================================
+    请求                                页面里的 ``roomId``
+    ==================================  ==========================================
+    裸 ``FINDUSER_PATH``                ``value=""`` → 解析不到房间号
+    ``?openid=<本人值>``                ``value="aaaa1111-…"``（请求者自己的房间）
+    ``?openid=``（空值）                ``value="bbbb2222-…"``（**别人的房间**）
+    ==================================  ==========================================
+
+    所以「openid 为空绝不发请求」不是防御性代码，而是正确性要求：
+    发空值会把**别人的**房间写进本机配置。
+
+    Note:
+        ``ScrapeContext.url`` 也会拼 ``openid``（:meth:`ScrapeContext.url`），
+        所以它对本函数产出的路径是**幂等**的 —— 两个调用点都直接用
+        :func:`fetch_finduser_page`，不会拼出 ``?openid=x&openid=x``。
+
+        ``Referer`` 头**仍然**用不带查询串的 :data:`FINDUSER_PATH`
+        —— 学校 WAF 校验它，带查询串会被拒。
+
+    Returns:
+        形如 ``/campus/webchat/dormEmRealRead/finduser?openid=xxx`` 的路径；
+        ``openid`` 为空（或全空白）时返回 ``""`` —— 调用方必须把空串
+        当作「不发请求、不采纳发现结果」。
+    """
+    token = (openid or "").strip()
+    if not token:
+        return ""
+    return f"{FINDUSER_PATH}?{urlencode({'openid': token})}"
+
+
+def fetch_finduser_page(ctx: Any, openid: str) -> str:
+    """发一次房间发现请求，返回 ``finduser`` 页面 HTML。
+
+    ``openid`` 为空时**不发任何请求**并返回空串 —— 这是 A1 发现边界的
+    唯一防线：``?openid=`` 空值会让学校返回**别人的**房间号，
+    那种结果绝不能写进本机配置。
+
+    Args:
+        ctx: ``FetchContext``（``ScrapeContext``）—— 它已负责把凭据拼进 URL。
+        openid: 登录凭据。
+
+    Returns:
+        页面 HTML；没有 openid 时为 ``""``（解析必然得到空 ``RoomInfo``）。
+    """
+    path = finduser_query(openid)
+    return ctx.get(path) if path else ""
 
 
 class ScrapeError(RuntimeError):

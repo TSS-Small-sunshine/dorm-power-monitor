@@ -75,9 +75,9 @@ from starwatt.config_registry import get_bool, get_int, get_str, set_state
 from starwatt.db.connection import init as db_init
 from starwatt.scraper.client import (
     DEFAULT_TIMEOUT_SEC,
-    FINDUSER_PATH,
     SchoolClient,
     ScrapeError,
+    fetch_finduser_page,
 )
 from starwatt.scraper.endpoints import ENDPOINTS, discover_room
 
@@ -197,7 +197,14 @@ class ScrapeContext:
         return self.client.post_form(self.url(path), data)
 
     def url(self, path: str) -> str:
-        """``path`` + ``?openid=...``（openid 做百分号编码，防止 ``&``/``#`` 破坏 URL）。"""
+        """``path`` + ``?openid=...``（openid 做百分号编码，防止 ``&``/``#`` 破坏 URL）。
+
+        📌 已经带 ``openid=`` 的路径**原样返回**：A1 房间发现用
+        :func:`starwatt.scraper.client.finduser_query` 自己把凭据拼好了，
+        这里再拼一次会得到 ``?openid=x&openid=x``。
+        """
+        if "openid=" in path:
+            return path
         sep = "&" if "?" in path else "?"
         return f"{path}{sep}openid={quote(self.openid, safe='')}"
 
@@ -528,14 +535,16 @@ def run_once(
         ctx = ScrapeContext(client=client, openid=openid, room_id=room_id)
 
         if not room_id:
-            # A1 房间自动发现（legacy 的 finduser 页面解析）
-            info = discover_room(ctx.get(FINDUSER_PATH))
+            # A1 房间自动发现（legacy 的 finduser 页面解析）。
+            # 📌 凭据由 `finduser_query` 拼进查询串；没有 openid 就不发请求
+            # （裸路径拿不到 roomId，`?openid=` 空值则返回**别人的**房间）。
+            info = discover_room(fetch_finduser_page(ctx, openid))
             room_id, room_label = info.room_id, info.room_label
             if not room_id:
                 _fail_status(fetch_only=fetch_only)
                 raise ScrapeError(
-                    "无法从 finduser 页面解析 roomId（请检查 openid，"
-                    "或在配置里直接填写 dorm_room_id）"
+                    "openid 无效或已过期，无法从 finduser 页面解析 roomId"
+                    "（请在配置里直接填写 dorm_room_id）"
                 )
             ctx.room_id = room_id
 

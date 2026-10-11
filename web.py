@@ -44,6 +44,7 @@ import logging
 import os
 
 from starwatt.logging_setup import get_logger, setup_logging
+from starwatt.web.blueprints.health import SCHEDULER_PROBE_KEY
 from starwatt.web.factory import create_app, register_startup_tasks
 
 setup_logging()
@@ -51,6 +52,14 @@ logger: logging.Logger = get_logger("web")
 
 #: gunicorn 要找的 WSGI 应用对象（``web:app``）
 app = create_app()
+
+#: ``trust_proxy=true`` 时 ``create_app()`` 已把 ``app.wsgi_app`` 换成 ProxyFix；
+#: 这里再显式换一次，确保 ``web:app`` 这个**模块级**对象本身就是包好的那个 ——
+#: 否则上面那行 rebind 会让 gunicorn 拿到未包装的旧对象。
+#: 未启用时是 no-op（见 ``starwatt.web.factory.init_proxy_fix``）。
+from starwatt.web.factory import init_proxy_fix as _init_proxy_fix  # noqa: E402
+
+_init_proxy_fix(app)
 
 #: 调度器单例（模块级，进程内唯一）
 _scheduler = None
@@ -140,5 +149,16 @@ def stop_scheduler() -> None:
 
 
 def scheduler_running() -> bool:
-    """调度器是否已在**本进程**内启动（``/healthz`` 与测试用）。"""
+    """调度器是否已在**本进程**内启动（``/healthz/deep`` 与测试用）。"""
     return _scheduler is not None and bool(getattr(_scheduler, "running", False))
+
+
+# ``/healthz/deep`` 读调度器状态用的接线点。
+#
+# 为什么在这里注册而不是让蓝图直接 ``import web``：``scripts/ast_guard.py``
+# 的 R4 规则禁止 ``starwatt/**`` 回引顶层旧模块（``web`` 就在禁列），而
+# ``starwatt/web/blueprints/health.py`` 属于 starwatt 包。所以由**顶层**
+# 把自己的探针写进 ``app.extensions``，依赖方向保持「顶层 → 包」。
+#
+# 📌 必须放在文件末尾：上面 ``scheduler_running`` 得先定义好才能注册。
+app.extensions[SCHEDULER_PROBE_KEY] = scheduler_running

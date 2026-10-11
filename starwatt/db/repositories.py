@@ -751,3 +751,40 @@ class FailedAttemptRepo:
                 "DELETE FROM failed_attempts WHERE attempted_at < ?", (cutoff,)
             )
         return int(cur.rowcount or 0)
+
+
+# ===========================================================================
+# 数据库维护 —— WAL 回收 / VACUUM
+#
+# 这两个动作**没有生产调用者之外的语义**，只是把 SQLite 的维护 PRAGMA 收在
+# 一处，让调度器不必自己拼 SQL（也不自己管连接）。🩺 审计 stability 发现
+# 全仓库 ``VACUUM`` / ``wal_checkpoint`` 命中 0 次：DELETE 掉的行只留在
+# WAL 与空闲页里，文件**只涨不缩**。
+# ===========================================================================
+def wal_checkpoint(mode: str = "TRUNCATE") -> None:
+    """执行 ``PRAGMA wal_checkpoint``（默认 TRUNCATE：回收 ``-wal`` 文件）。
+
+    TRUNCATE 会把 WAL 截回零长度，因此**只有在没有其它写事务时才有效**；
+    拿不到锁时 SQLite 直接返回而不报错，下一次清理再试即可 —— 不该因为
+    「有人正在写」就把整个清理任务判失败。
+
+    :param mode: ``PASSIVE`` / ``FULL`` / ``RESTART`` / ``TRUNCATE``。
+    """
+    with connect() as conn:
+        conn.execute(f"PRAGMA wal_checkpoint({mode});")
+
+
+def vacuum() -> None:
+    """``VACUUM``：把 DELETE 掉的空间真正还给文件系统。
+
+    ⚠️ **绝不能每天跑**：VACUUM 会重建整库（DB 越大越慢，还要求约 2 倍
+    磁盘空间），在 52 万行/年的表上每天一次是纯浪费。调用方按「累计删除
+    行数阈值」触发（见 :func:`starwatt.scheduler.maintenance_job`）。
+
+    这里用仓库既有的 :func:`~starwatt.db.connection.connect`
+    （``isolation_level=None`` → 自动提交、无悬挂事务），与其它仓储同一套
+    连接管理；VACUUM 不能在显式事务里跑，这一点由该封装天然满足。
+    """
+    with connect() as conn:
+        conn.execute("VACUUM;")
+

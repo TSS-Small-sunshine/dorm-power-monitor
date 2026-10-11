@@ -339,7 +339,7 @@ class TestSecrets:
 
 class TestMask:
     def test_masks_all_but_last_four(self) -> None:
-        assert mask("FAKopenid0000000000000WXYZ") == "••••0sHE"
+        assert mask("FAKopenid0000000000000WXYZ") == "••••WXYZ"
 
     def test_short_values_fully_masked(self) -> None:
         """🔑 短值必须**全部**打码 —— 露出 4/5 个字符等于没脱敏。"""
@@ -354,7 +354,7 @@ class TestMask:
 
     def test_realistic_secret_lengths(self) -> None:
         """真实的 openid / token 远长于阈值 —— 行为与 Q15 描述一致。"""
-        assert mask("FAKopenid0000000000000WXYZ") == "••••0sHE"
+        assert mask("FAKopenid0000000000000WXYZ") == "••••WXYZ"
         assert mask("a" * 32) == "••••aaaa"
 
     def test_empty(self) -> None:
@@ -506,7 +506,7 @@ class TestBulkViews:
         """🔑 默认脱敏 —— 调用方忘了脱敏也不会泄露。"""
         store.set("dorm_openid", "FAKopenid0000000000000WXYZ")
         values = store.all_values()
-        assert values["dorm_openid"] == "••••0sHE"
+        assert values["dorm_openid"] == "••••WXYZ"
 
     def test_all_values_can_include_secrets(self, tmp_db) -> None:
         store.set("dorm_openid", "FAKopenid0000000000000WXYZ")
