@@ -19,6 +19,47 @@
 
 ## 一、Docker（推荐）
 
+### 推荐走法：用仓库自带的助手脚本
+
+`starwatt-docker.sh` 把「装 / 升 / 备 / 查」都包好了，因为它替你处理了四件
+最容易踩的事：
+
+| 坑 | 助手怎么做 |
+|---|---|
+| 初始密码只打印一次，没截到就没了 | entrypoint 同时**落盘**到数据卷，`password` 可反复取；建号成功后自动删除 |
+| 升级要手改 compose 里的 tag，下次 `curl` 又覆盖回去 | tag 写在 **`.env`** 里（Compose 自动读），升级只动一行 |
+| `cp records.db` 备份 WAL 库会漏最后几个事务 | 走容器内 Python `sqlite3` 的**在线备份 API**，并立即比对两侧行数 |
+| 升级忘了备份 | `upgrade` **先自动备份**，失败只告警不阻断 |
+
+```bash
+# 1. 拿 compose + 助手（也可以直接从 Release 页面下载这两个文件）
+curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/starwatt-docker.sh
+chmod +x starwatt-docker.sh
+
+# 2. 安装：生成 .env（含随机密钥）→ 起服务 → 探活 → 打印初始密码
+./starwatt-docker.sh install
+```
+
+装完之后：
+
+```bash
+./starwatt-docker.sh status            # 状态 + /healthz 版本 + 数据卷在宿主机的真实路径
+./starwatt-docker.sh password          # 初始密码（首登改密后该文件会被删除）
+./starwatt-docker.sh upgrade           # 升级到 latest（**先自动备份**）
+./starwatt-docker.sh upgrade 2.0.3-starcore   # 指定版本（也是回滚方式）
+./starwatt-docker.sh backup            # 备份库 + 密钥（tar.gz），并校验行数
+./starwatt-docker.sh restore <文件>     # 恢复（要输入 yes 二次确认）
+./starwatt-docker.sh logs -f
+./starwatt-docker.sh down              # 停服务（**不动数据卷**）
+```
+
+> **升级请改 `.env` 里的 `STARWATT_TAG=`**，不要改 `docker-compose.yml` ——
+> compose 通常是 `curl` 下来的，下次再 curl 一次就把你的修改覆盖回去了。
+> 用助手的话连这一行都不用碰。
+
+### 手工三步（不想用脚本时）
+
 ```bash
 # 1. 拉 compose 文件（也可以直接从 Release 下载）
 curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/docker-compose.yml
@@ -26,8 +67,9 @@ curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-moni
 # 2. 起服务（不用写 .env，变量都有默认值）
 docker compose up -d
 
-# 3. 取初始密码（**只打印这一次**）
+# 3. 取初始密码（**只打印这一次**；也可以读数据卷里的文件）
 docker compose logs starwatt | grep 初始密码
+# 或者：docker compose exec starwatt cat /data/.initial-admin-password
 ```
 
 > **镜像从哪来？** compose 里同时写了 `image:` 与 `build:`：
@@ -41,19 +83,19 @@ docker compose logs starwatt | grep 初始密码
 
 | Tag | 含义 |
 |---|---|
-| `2.0.2-starcore` | 具体版本（compose 的默认值，**推荐固定用它**） |
-| `latest` | 最新稳定版（当前 = 2.0.2） |
-| `2.0.2-starcore-armv7` | armv7（32 位 ARM）专用 |
+| `2.0.3-starcore` | 具体版本（compose 的默认值，**推荐固定用它**） |
+| `latest` | 最新稳定版（当前 = 2.0.3） |
+| `2.0.3-starcore-armv7` | armv7（32 位 ARM）专用 |
 | `2.0.1-starcore` | ⚠️ **勿用**：HTTP 客户端拒绝 JSON 数组 → F2/F3/F5 静默失败（每日用电 / 违规 / 缴费恒空），另有电表「最后上报」与概览日均的缺陷 |
 | `2.0.0-starcore` | 首个 2.0 版本（缺 `scripts/cutover_check.py`，且含 2.0.1 的全部缺陷） |
 
 ```bash
-docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.2-starcore
+docker pull ghcr.io/tss-small-sunshine/starwatt:2.0.3-starcore
 ```
 
 > 注意**没有** `2.0` 这种「主次版本」标签：本项目的版本号带 `-starcore` 后缀，
 > 按 semver 算 prerelease，而 docker metadata 对 prerelease 只生成完整版本号与
-> `latest`，不生成 `major.minor`。所以固定版本请用完整的 `2.0.2-starcore`。
+> `latest`，不生成 `major.minor`。所以固定版本请用完整的 `2.0.3-starcore`。
 
 多架构清单覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` —— `docker pull`
 会按你的机器自动选。
@@ -131,7 +173,7 @@ Release 里有两个包：
 |---|---|
 | `starwatt-<版本>-amd64.tar.gz` | 只有镜像（amd64） |
 | `starwatt-<版本>-arm64.tar.gz` | 只有镜像（arm64） |
-| `starwatt-<版本>-offline.tar.gz` | 离线包：**上面两个镜像** + compose + 文档 + install.sh |
+| `starwatt-<版本>-offline.tar.gz` | 离线包：**上面两个镜像** + compose + 文档 + `install.sh` + `starwatt-docker.sh` |
 
 ```bash
 tar -xzf starwatt-2.0.0-starcore-offline.tar.gz
@@ -142,8 +184,7 @@ cat 离线安装.txt          # 步骤都写在这个文件里
 uname -m                  # x86_64 → amd64 包；aarch64 → arm64 包
 
 docker load -i images/starwatt-2.0.0-starcore-amd64.tar.gz
-docker compose up -d
-docker compose logs starwatt | grep 初始密码
+./starwatt-docker.sh install      # 起服务 + 打印初始密码（等价于手工 docker compose up -d）
 ```
 
 离线包在 CI 里**真起过容器**（`docker load` → `docker run` → `/healthz` 通 →

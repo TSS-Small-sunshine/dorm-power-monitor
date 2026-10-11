@@ -14,7 +14,7 @@ name: Release
 #   2. 离线包（N5 / RK8：国内拉镜像慢）
 #      starwatt-<ver>-<arch>.tar.gz     只有镜像（docker load 即用）
 #      starwatt-<ver>-offline.tar.gz    镜像 + compose + .env.example +
-#                                       install.sh + 文档（断网机器也能装）
+#                                       install.sh / starwatt-docker.sh + 文档（断网机器也能装）
 #
 # 为什么在发布前跑测试
 # ====================
@@ -311,7 +311,7 @@ jobs:
           #    于是 Release 上只剩一个产物，而文档里写的是两个（踩过）。
           cp "starwatt-$VERSION-amd64.tar.gz" "starwatt-$VERSION-arm64.tar.gz" "$DIR/images/"
 
-          cp docker-compose.yml .env.example README.md install.sh "$DIR/"
+          cp docker-compose.yml .env.example README.md install.sh starwatt-docker.sh "$DIR/"
           cp deploy/dorm-web.service "$DIR/deploy/"
           for doc in DEPLOY DEPLOY_PAAS FAQ CONFIG UPGRADE M7_CUTOVER; do
             [ -f "docs/$doc.md" ] && cp "docs/$doc.md" "$DIR/" || true
@@ -328,7 +328,10 @@ jobs:
           2. 导入镜像：
                docker load -i images/starwatt-<版本>-<架构>.tar.gz
 
-          3. 起服务：
+          3. 起服务（推荐用助手脚本，它顺带生成 .env 并探活）：
+               ./starwatt-docker.sh install
+
+             也可以手工：
                docker compose up -d
 
              没有 compose 也行：
@@ -336,14 +339,18 @@ jobs:
                  -p 127.0.0.1:5000:5000 -v starwatt-data:/data \
                  ghcr.io/tss-small-sunshine/starwatt:<版本>
 
-          4. 取初始密码（**只打印这一次**）：
+          4. 取初始密码：
+               ./starwatt-docker.sh password
+             手工安装时它只打印一次，也可以读数据卷里的文件：
                docker compose logs starwatt | grep 初始密码
+               docker compose exec starwatt cat /data/.initial-admin-password
 
           5. 打开 http://127.0.0.1:5000 ，用 admin + 上面的密码登录，
              会被强制改密。
 
           数据与密钥都在数据卷里（starwatt-data），
-          其中 /data/.flask_secret_key 丢了就无法解密配置中心里的凭据 —— 请备份。
+          其中 /data/.flask_secret_key 丢了就无法解密配置中心里的凭据 —— 请备份：
+               ./starwatt-docker.sh backup
           详细说明见 DEPLOY.md。
           TXT
 
@@ -416,7 +423,7 @@ jobs:
           |---|---|
           | \`starwatt-$VERSION-amd64.tar.gz\` | amd64 镜像，\`docker load\` 即用 |
           | \`starwatt-$VERSION-arm64.tar.gz\` | arm64 镜像，\`docker load\` 即用 |
-          | \`starwatt-$VERSION-offline.tar.gz\` | 离线包：**上面两个镜像** + compose + 文档 + install.sh |
+          | \`starwatt-$VERSION-offline.tar.gz\` | 离线包：**上面两个镜像** + compose + 文档 + install.sh + starwatt-docker.sh |
 
           镜像 \`$IMAGE:$VERSION\` 是多架构 manifest（amd64 / arm64；armv7 是单独的
           \`$VERSION-armv7\` 标签）。离线包在 CI 里**真起过容器**：load → run →

@@ -1,18 +1,27 @@
 # =============================================================================
 # StarWatt 星瓦 —— Docker Compose（Q3 的主路径）
 # =============================================================================
-# 快速开始
-# --------
-#   1. 建数据目录：        mkdir -p data
-#   2. 起服务：            docker compose up -d
-#   3. 看初始密码：        docker compose logs starwatt | grep 初始密码
-#   4. 打开：              http://127.0.0.1:5000
+# 快速开始（推荐用仓库自带的助手，它把下面 4 步 + 备份都包好了）
+# -------------------------------------------------------------------------
+#   ./starwatt-docker.sh install      # 生成 .env、起服务、打印初始密码
+#   ./starwatt-docker.sh upgrade      # 升级（自动先备份）
+#   ./starwatt-docker.sh backup       # WAL 感知的备份
+#   ./starwatt-docker.sh help         # 全部命令
+#
+# 也可以纯手工：
+#   1. 起服务：            docker compose up -d
+#   2. 看初始密码：        docker compose logs starwatt | grep 初始密码
+#      （或者：            docker compose exec starwatt cat /data/.initial-admin-password）
+#   3. 打开：              http://127.0.0.1:5000
 #
 # 三点说明
 # --------
 # 1. **不用写 .env 也能跑**：下面所有变量都带默认值；有 `.env` 时
-#    Compose 会自动读取它做变量替换（这是 Compose 的内置行为，不需要 env_file）。
-# 2. **首次启动自动生成随机管理员密码**并打印一次（见 docker-entrypoint.sh）。
+#    Compose 会自动读取它做变量替换（这是 Compose 的内置行为，不需要额外声明）。
+#    ⚠️ **升级请改 `.env` 里的 `STARWATT_TAG`**，不要改这个文件 ——
+#    compose 通常是 curl 下来的，下次再 curl 一次就把你的修改覆盖回去了。
+# 2. **首次启动自动生成随机管理员密码**并打印一次（见 docker-entrypoint.sh），
+#    同时落盘到数据卷的 `.initial-admin-password`，建号成功后自动删除。
 # 3. **FLASK_SECRET_KEY 落在数据卷里**（/data/.flask_secret_key）——
 #    它同时用于加密配置中心里的 secret，丢了就无法解密，务必备份卷。
 # =============================================================================
@@ -26,7 +35,7 @@ services:
     #      不需要等 registry 上有发布版）
     #   2. 本地已有（或你 pull 过）→ 直接用，不重新构建
     # 想强制用发布版、不要本地构建：`docker compose pull` 或删掉 build 那一行。
-    image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.2-starcore}
+    image: ghcr.io/tss-small-sunshine/starwatt:${STARWATT_TAG:-2.0.3-starcore}
     build:
       context: .
     container_name: starwatt

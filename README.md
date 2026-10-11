@@ -1,6 +1,6 @@
 # 星瓦 StarWatt · 宿舍电量监控
 
-> **v2.0.0 星核 / Star Core** ← 当前（重写分支 `rewrite/r69`）
+> **v2.0.3 星核 / Star Core** ← 当前（`main`，R69 重写已合并）
 > 上一个已发布版本：`v1.1.0 微光 / Glimmer`（R60–R68）
 > 版本与代号体系见 [`docs/NAMING.md`](docs/NAMING.md)
 
@@ -32,9 +32,10 @@
 离线包（断网机器）/ 裸机 `install.sh`。首次启动会打印一次随机管理员密码，
 登录后强制改密。
 
-质量门禁现状：`pytest` **1453 passed** · `ruff` 0 · AST 守卫通过 · 凭据扫描通过 ·
-`mypy starwatt/` 9 项历史遗留（均在安全敏感模块，未为纯类型修饰改动）·
-契约快照 `tests/regression` 47 项全绿。
+质量门禁现状（在 2.0.2 上实测）：`pytest` **1529 passed**（unit 1467 + regression 62）·
+`ruff` 0 · AST 守卫通过 · 凭据扫描通过 ·
+`mypy starwatt/` 10 项历史遗留（均在安全敏感模块，未为纯类型修饰改动）·
+契约快照 `tests/regression` 62 项全绿。
 
 ---
 
@@ -55,7 +56,7 @@
 
 ## 🖼️ 界面预览
 
-三张图都来自**真实运行**的实例（不是设计稿）：
+三张图都是**实际构建产物在浏览器里的渲染**（示例数据，不是设计稿）：
 
 | 登录 | 仪表盘 |
 |---|---|
@@ -74,7 +75,9 @@
 ```bash
 # ① Docker（推荐，amd64 / arm64 / armv7 都行）
 curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/docker-compose.yml
-docker compose up -d && docker compose logs starwatt | grep 初始密码
+curl -fsSLO https://raw.githubusercontent.com/TSS-Small-sunshine/dorm-power-monitor/main/starwatt-docker.sh
+chmod +x starwatt-docker.sh
+./starwatt-docker.sh install     # 起服务 + 打印初始密码；升级/备份/取密码都在这一个脚本里
 
 # ② 裸机（Debian/Ubuntu，amd64 / arm64）
 git clone https://github.com/TSS-Small-sunshine/dorm-power-monitor.git && cd dorm-power-monitor
@@ -202,8 +205,11 @@ sudo journalctl -u dorm-web -f
   **不能**用来判断 master/worker）
 - 生产建议 `DB_PATH=/var/lib/dorm-power-monitor/records.db` 并让服务用户可写
 
-> Docker / `docker compose` / 一键 `install.sh` / 离线包：**M6 待做**。
-> 在那之前请按上面的裸机步骤部署。
+> Docker / `docker compose` / 一键 `install.sh` / 离线包都已在 **M6** 交付。
+> Docker 用户最省事的一条是仓库自带的
+> `./starwatt-docker.sh install`（安装 / 升级 / 备份 / 取初始密码都在一个脚本里，
+> 见 [`docs/DEPLOY.md`](docs/DEPLOY.md)）。
+> **当前只剩 M7 生产切换**：[`docs/M7_CUTOVER.md`](docs/M7_CUTOVER.md)。
 
 ---
 
@@ -230,6 +236,8 @@ dorm-power-monitor/
 ├── deploy/                       # systemd 单元
 ├── docs/                         # 需求 / 计划 / 报告
 ├── web.py                        # gunicorn 入口（web:app）+ 启动钩子
+├── install.sh                    # 裸机一键安装 / 升级（amd64 / arm64）
+├── starwatt-docker.sh            # Docker 助手：install / upgrade / backup / password …
 └── gunicorn.conf.py              # workers=1 / preload_app=False（有测试守卫）
 ```
 
@@ -256,11 +264,11 @@ web.py（gunicorn 入口）
 ### 跑测试与门禁
 
 ```bash
-python -m pytest -q                       # 1359 项
+python -m pytest -q                       # 1529 项
 python -m ruff check .                    # 静态检查（含行长）
 python -m scripts.ast_guard               # 分层守卫 R1/R4/R5/R7/R8
 python -m scripts.secret_scan             # 凭据扫描（防误提交）
-python -m mypy starwatt/                  # 渐进严格（9 项历史遗留）
+python -m mypy starwatt/                  # 渐进严格（10 项历史遗留）
 python -m compileall -q -x '(\.venv|__pycache__|\.git|node_modules)' .
 
 cd frontend && npm run build              # 含 vue-tsc 类型检查
@@ -495,7 +503,7 @@ sudo systemctl start dorm-web
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | 需求与 23 个决策点（Q1–Q23） |
 | [`docs/REWRITE_PLAN.md`](docs/REWRITE_PLAN.md) | 重写计划 M0–M7 + 验收标准（DoD） |
 | [`docs/FEATURE_INVENTORY.md`](docs/FEATURE_INVENTORY.md) | 旧版 105 项功能清单（必留 / 改 / 删 / 新增） |
-| [`docs/BLOCKER_FIXES.md`](docs/BLOCKER_FIXES.md) | 12 个阻塞项（B1–B12）的处置方案 |
+| [`docs/BLOCKER_FIXES.md`](docs/BLOCKER_FIXES.md) | 5 个阻断项（B1–B5）+ 2 个设计级严重问题（M1/M4）的处置方案 |
 | [`docs/SCOPE_DECISION.md`](docs/SCOPE_DECISION.md) | 范围决策与理由 |
 | [`docs/NAMING.md`](docs/NAMING.md) | 版本号与「星 × 电」代号体系 |
 | [`docs/reports/`](docs/reports/) | 里程碑报告（`m0_REPORT.md`、`m4_REPORT.md`） |
