@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 配置中心（5.6 / Q15）—— 完全由 ``GET /api/admin/config/schema`` 驱动
+ * 配置中心（5.6 / Q15 / UI 改版 v2）—— 完全由 ``GET /api/admin/config/schema`` 驱动
  *
  * 验收要点（计划 §M5）
  * ====================
@@ -12,12 +12,30 @@
  * * 重置（``POST /config/reset``，会二次确认）
  * * 导入导出（导出可含/不含明文 secret；导入合并语义，脱敏值后端自动跳过）
  * * 保存后逐键回显错误（207 部分成功）
+ *
+ * v2 只改**展示层**（``api.*`` 的调用签名、参数、返回值处理与上面每一条行为一字未动）
+ * ==============================================================================
+ *
+ * * **保存栏常驻在视口底部**：旧版保存按钮在页面顶部工具条里 ——
+ *   94 个字段往下翻，改完最后一项要一路滚回顶部才能保存，这是这一页最大的
+ *   可用性问题。现在保存栏贴着视口底边（毛玻璃、不遮内容），
+ *   任何时候都够得着，并实时显示「已修改 N 项」。
+ * * **分组卡片化**：组头写组名 + ``已显示 / 总数`` 胶囊，9 个分组一眼能数清。
+ * * **字段行两列布局**（见 ``ConfigField``）：左「是什么」右「控件」。
+ * * **复选框有明确选中态**：勾上时整块变品牌柔底 + 品牌描边，
+ *   不再只靠一个 3.5px 的方框里的小勾。
+ * * **动作分主次**：保存 = primary，导出 / 导入 = ghost，恢复默认 = danger。
+ * * **提示条统一走 ``Notice``**：danger 自带 ``role="alert"``，
+ *   成功与失败项汇总走 ``role="status"``（``aria-live``）。
+ * * **首屏骨架屏**：旧版是一行「正在加载配置…」，内容到达时整页跳一下。
  */
 import { computed, onMounted, ref } from 'vue'
 
 import { ApiError, api } from '@/api/client'
 import type { ConfigGroup, ConfigImportResult, ConfigSchemaPayload } from '@/api/types'
 import BaseButton from '@/components/BaseButton.vue'
+import Icon from '@/components/Icon.vue'
+import Notice from '@/components/Notice.vue'
 import ConfigField from '@/components/config/ConfigField.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -39,6 +57,25 @@ const acceptSecrets = ref(false)
 
 /** 有未保存改动时才允许保存 */
 const dirtyKeys = computed(() => Object.keys(edited.value))
+
+/** 校验失败项数（来自 PUT / import 的 207 响应）—— 只用于汇总提示 */
+const errorCount = computed(() => Object.keys(errors.value).length)
+
+/** 分组数（只用于标题副行） */
+const groupCount = computed(() => (schema.value?.groups ?? []).length)
+
+/** 高级项总数（勾选框旁边标出「打开后多几项」） */
+const advancedCount = computed(() =>
+  (schema.value?.groups ?? []).reduce(
+    (total, group) => total + group.settings.filter((setting) => setting.advanced).length,
+    0,
+  ),
+)
+
+/** 顶栏 / 保存栏里的次级按钮样式（与 BaseButton ghost sm 一致） */
+const GHOST_ACTION =
+  'inline-flex items-center gap-1.5 rounded-control border border-border bg-elevated px-2.5 py-1.5 ' +
+  'text-xs font-medium text-content transition duration-150 hover:border-border-strong hover:bg-surface'
 
 /**
  * 条件显示：``depends_on`` 指向的键为假 → 本项不显示。
@@ -195,72 +232,179 @@ onMounted(load)
 
 <template>
   <div class="space-y-4">
-    <!-- 工具条 -->
-    <div class="sw-card flex flex-wrap items-center justify-between gap-3 p-4">
-      <div>
-        <h2 class="text-sm font-semibold text-content">配置中心</h2>
-        <p class="text-xs text-muted">
-          {{ schema?.total ?? 0 }} 个配置项 · 逐项独立校验，失败项会保留下来让你修正
-        </p>
+    <Notice v-if="fatal" tone="danger">{{ fatal }}</Notice>
+    <Notice v-if="notice" tone="success" aria-live="polite">{{ notice }}</Notice>
+    <Notice v-if="errorCount" tone="warning" aria-live="polite">
+      有 <strong class="tabular">{{ errorCount }}</strong> 项没通过校验：已在下面对应字段标出中文原因，
+      改完再点一次保存即可（其余项已生效）。
+    </Notice>
+
+    <!-- 工具条：说明 + 导入导出（保存不在这里，见页面底部的常驻保存栏） -->
+    <section class="sw-card p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h2 class="sw-section-title">配置中心</h2>
+          <p class="mt-0.5 text-xs text-muted">
+            <span class="tabular">{{ schema?.total ?? 0 }}</span> 个配置项 ·
+            <span class="tabular">{{ groupCount }}</span> 个分组 · 逐项独立校验，失败项会保留下来让你修正
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <BaseButton variant="ghost" size="sm" @click="exportConfig(false)">
+            <template #icon><Icon name="download" :size="14" /></template>
+            导出
+          </BaseButton>
+          <BaseButton variant="ghost" size="sm" @click="exportConfig(true)">
+            <template #icon><Icon name="download" :size="14" /></template>
+            导出（含凭据）
+          </BaseButton>
+
+          <label
+            :class="[GHOST_ACTION, 'cursor-pointer', importing ? 'pointer-events-none opacity-60' : '']"
+          >
+            <Icon :name="importing ? 'refresh' : 'upload'" :size="14" />
+            {{ importing ? '导入中…' : '导入' }}
+            <input
+              type="file"
+              accept="application/json,.json"
+              class="hidden"
+              :disabled="importing"
+              @change="importConfig"
+            />
+          </label>
+
+          <BaseButton variant="danger" size="sm" @click="reset">
+            <template #icon><Icon name="reset" :size="14" /></template>
+            恢复默认
+          </BaseButton>
+        </div>
       </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <label class="flex items-center gap-1.5 text-xs text-muted">
-          <input v-model="showAdvanced" type="checkbox" class="h-3.5 w-3.5" />
-          显示高级项
-        </label>
+
+      <!-- 显示选项：勾上时整块变成品牌柔底，选中态一眼可见 -->
+      <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <label
-          class="flex items-center gap-1.5 text-xs text-muted"
+          class="inline-flex cursor-pointer items-center gap-2 rounded-control border px-2.5 py-1.5
+                 text-xs font-medium transition duration-150"
+          :class="
+            showAdvanced
+              ? 'border-brand/40 bg-brand-soft text-brand'
+              : 'border-border bg-elevated text-muted hover:border-border-strong'
+          "
+        >
+          <input v-model="showAdvanced" type="checkbox" class="h-4 w-4 accent-brand" />
+          显示高级项
+          <span class="tabular" :class="showAdvanced ? 'text-brand' : 'text-muted/70'">
+            {{ advancedCount }}
+          </span>
+        </label>
+
+        <label
+          class="inline-flex cursor-pointer items-center gap-2 rounded-control border px-2.5 py-1.5
+                 text-xs font-medium transition duration-150"
+          :class="
+            acceptSecrets
+              ? 'border-warning/40 bg-warning-soft text-warning'
+              : 'border-border bg-elevated text-muted hover:border-border-strong'
+          "
           title="整机迁移用：勾选后导入会写入文件里的明文凭据；不勾选时明文凭据一律被拒绝"
         >
-          <input v-model="acceptSecrets" type="checkbox" class="h-3.5 w-3.5" />
+          <input v-model="acceptSecrets" type="checkbox" class="h-4 w-4 accent-warning" />
           导入接受凭据
         </label>
-        <BaseButton variant="ghost" @click="exportConfig(false)">导出</BaseButton>
-        <BaseButton variant="ghost" @click="exportConfig(true)">导出（含凭据）</BaseButton>
-        <label
-          class="cursor-pointer rounded-control border border-border px-4 py-2 text-sm text-content
-                 transition hover:bg-surface"
+
+        <p class="text-xs text-muted">
+          「导入接受凭据」默认关闭 —— 打开后导入会写入文件里的明文凭据（openid / 飞书 / QQ）。
+        </p>
+      </div>
+    </section>
+
+    <!-- 首屏骨架：把布局先占住，数据到达时不会整页跳 -->
+    <div v-if="loading" class="space-y-4" aria-busy="true" aria-live="polite">
+      <div v-for="n in 3" :key="n" class="sw-card p-4">
+        <div class="sw-skeleton h-4 w-28" />
+        <div class="mt-4 space-y-5">
+          <div
+            v-for="m in 3"
+            :key="m"
+            class="grid gap-x-6 gap-y-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]"
+          >
+            <div>
+              <div class="sw-skeleton h-3.5 w-40" />
+              <div class="sw-skeleton mt-2 h-3 w-56" />
+            </div>
+            <div class="sw-skeleton h-9 w-full" />
+          </div>
+        </div>
+      </div>
+      <span class="sr-only">正在加载配置…</span>
+    </div>
+
+    <!-- 分组表单：分组与字段全部来自 schema（新增配置项前端零改动） -->
+    <template v-else>
+      <section
+        v-for="group in schema?.groups ?? []"
+        :key="group.key"
+        class="sw-card overflow-hidden"
+      >
+        <header
+          class="flex flex-wrap items-center justify-between gap-2 border-b border-border
+                 bg-sunken/60 px-4 py-3"
         >
-          {{ importing ? '导入中…' : '导入' }}
-          <input type="file" accept="application/json,.json" class="hidden" @change="importConfig" />
-        </label>
-        <BaseButton variant="ghost" @click="reset">恢复默认</BaseButton>
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <h3 class="sw-section-title truncate">{{ group.label }}</h3>
+            <span class="sw-chip bg-elevated text-muted">
+              <span class="tabular">{{ visible(group).length }}</span>
+              /
+              <span class="tabular">{{ group.settings.length }}</span>
+              项
+            </span>
+          </div>
+          <code class="rounded bg-elevated px-1.5 py-0.5 font-mono text-[11px] text-muted">
+            {{ group.key }}
+          </code>
+        </header>
+
+        <div class="px-4">
+          <ConfigField
+            v-for="setting in visible(group)"
+            :key="setting.key"
+            :setting="setting"
+            :value="valueOf(setting.key)"
+            :error="errors[setting.key]"
+            @update:model-value="(v) => onEdit(setting.key, v)"
+          />
+
+          <p v-if="!visible(group).length" class="py-4 text-xs text-muted">
+            这一组的项都被隐藏了（依赖的开关未开启，或都是高级项）。
+          </p>
+        </div>
+      </section>
+    </template>
+
+    <!--
+      常驻保存栏：贴着视口底边（毛玻璃，不硬切页面）。
+      旧版的保存按钮只在页面顶部，改完最后一个字段要滚回顶部才能保存。
+    -->
+    <div class="sw-glass sticky bottom-0 z-10 -mx-4 border-t border-border px-4 py-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <p class="text-xs text-muted">
+          <template v-if="dirtyKeys.length">
+            已修改
+            <strong class="tabular text-content">{{ dirtyKeys.length }}</strong>
+            项，尚未保存
+          </template>
+          <template v-else>没有未保存的改动</template>
+          <span v-if="errorCount" class="ml-1 text-warning">
+            · {{ errorCount }} 项待修正
+          </span>
+        </p>
+
         <BaseButton :loading="saving" :disabled="!dirtyKeys.length" @click="save">
+          <template #icon><Icon name="save" :size="14" /></template>
           保存{{ dirtyKeys.length ? `（${dirtyKeys.length}）` : '' }}
         </BaseButton>
       </div>
     </div>
-
-    <p v-if="fatal" class="rounded-control bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
-      {{ fatal }}
-    </p>
-    <p
-      v-if="notice"
-      class="rounded-control bg-success/10 px-3 py-2 text-sm text-success"
-      role="status"
-    >
-      {{ notice }}
-    </p>
-
-    <p v-if="loading" class="py-10 text-center text-sm text-muted">正在加载配置…</p>
-
-    <!-- 分组表单：分组与字段全部来自 schema（新增配置项前端零改动） -->
-    <section v-for="group in schema?.groups ?? []" :key="group.key" class="sw-card p-4">
-      <h3 class="mb-1 text-sm font-semibold text-content">{{ group.label }}</h3>
-      <p class="mb-2 text-xs text-muted">{{ group.key }} · 显示 {{ visible(group).length }} 项</p>
-
-      <ConfigField
-        v-for="setting in visible(group)"
-        :key="setting.key"
-        :setting="setting"
-        :value="valueOf(setting.key)"
-        :error="errors[setting.key]"
-        @update:model-value="(v) => onEdit(setting.key, v)"
-      />
-
-      <p v-if="!visible(group).length" class="py-3 text-xs text-muted">
-        这一组的项都被隐藏了（依赖的开关未开启，或都是高级项）。
-      </p>
-    </section>
   </div>
 </template>

@@ -78,14 +78,22 @@ export const useAuthStore = defineStore('auth', {
     },
 
     /**
-     * 查一次 OOBE 状态（**仅管理员**；只查一次）。
+     * 查一次 OOBE 状态（**仅管理员**）。
+     *
+     * 缓存规则（B4 修复）：只缓存**正向**结果，``false`` 每次重查。
+     *
+     * 为什么不能缓存 ``false``：守卫在每次导航时调用本方法，若把
+     * 「还没走完」也缓存下来，用户走完向导后守卫仍读到**旧的 false**，
+     * 于是 ``router.replace('/')`` 被立刻弹回 ``/oobe`` —— 表现为
+     * 「服务端已完成却回不到主界面」，且不刷新页面永远出不去。
+     * 「已完成」是不可逆的终态，缓存它是安全的。
      *
      * 失败时**不改** ``oobeCompleted``（保持 ``null``）：失败通常意味着
      * 「强制改密拦住了」或「不是管理员」—— 两种情况都不该把用户往向导里推，
      * 也不该把这个结果缓存下来，改完密码后要能重新判断。
      */
     async checkOobe(): Promise<void> {
-      if (!this.isAdmin || this.oobeCompleted !== null) return
+      if (!this.isAdmin || this.oobeCompleted === true) return
       try {
         this.oobeCompleted = (await api.oobeState()).completed
       } catch {

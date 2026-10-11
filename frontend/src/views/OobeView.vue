@@ -19,6 +19,23 @@
  *
  * 每一步都可以跳过：跳过 = 只移动步号、不保存。走到最后一步即标记完成，
  * 之后所有配置仍能在「配置中心」里改。
+ *
+ * v2 改动（**只有展示层**：state / advance / parse / verify 的调用一字未改）
+ * =====================================================================
+ *
+ * * **步骤条从「一行彩色小字」升级成真正的进度指示**：编号圆点 + 连接线 +
+ *   细进度条。旧版把 5 个步骤名平铺成文字，用户看不出「还剩几步」；而且
+ *   它用 `bg-brand/10` 标当前步 —— 与「已完成」的绿色只差一点色相。
+ *   现在：当前步是实心品牌色圆点，已完成是绿色对勾，未到是灰边。
+ * * **每步一张卡（`header` / 正文 / `footer` 三段）**：导航按钮固定在卡片
+ *   底部，不再随字段多少上下浮动；切步时卡片用 `:key` 重挂载，走一次
+ *   `animate-fade-in-up`，让「换了一步」这件事看得见。
+ * * **顶部条吸顶 + 毛玻璃**：字段多的步骤要滚，滚下去还得能点「稍后再配」。
+ * * **`notice` 的色调按 `errors` 推导**：旧版把「有 N 项没通过校验」渲染成
+ *   **绿色成功**提示 —— 那是这一步唯一需要用户动手的信号，不该是绿的。
+ * * 学校接入那块：粘贴框换成 `BaseField`（与其它字段同一套标签/提示样式），
+ *   解析结果用 `Notice`，`✅/❌` 换成 `<Icon>`。
+ * * 加载态从一行「正在加载…」换成骨架屏（布局不会在数据到达时跳一下）。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -26,7 +43,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api } from '@/api/client'
 import type { OobeStatePayload } from '@/api/types'
 import BaseButton from '@/components/BaseButton.vue'
+import BaseField from '@/components/BaseField.vue'
 import ConfigField from '@/components/config/ConfigField.vue'
+import Icon from '@/components/Icon.vue'
+import Notice from '@/components/Notice.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -180,119 +200,204 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="min-h-full bg-surface">
-    <header class="border-b border-border bg-elevated">
+  <div class="min-h-full bg-sunken">
+    <header class="sw-glass sticky top-0 z-20 border-b border-border">
       <div class="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3">
-        <div>
-          <h1 class="text-base font-bold text-content">首次配置</h1>
-          <p class="text-xs text-muted">
-            {{ auth.siteName }} · 第 {{ (state?.step ?? 0) + 1 }} / {{ state?.total ?? 5 }} 步
-          </p>
-        </div>
-        <div class="flex items-center gap-2">
-          <ThemeToggle />
-          <button
-            type="button"
-            class="rounded-control border border-border px-2.5 py-1.5 text-sm text-content transition hover:bg-surface"
-            @click="router.push('/')"
+        <div class="flex min-w-0 items-center gap-3">
+          <span
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-control
+                   bg-brand-soft text-brand"
+            aria-hidden="true"
           >
+            <Icon name="zap" :size="18" />
+          </span>
+          <div class="min-w-0">
+            <h1 class="truncate text-base font-bold leading-tight text-content">首次配置</h1>
+            <p class="truncate text-xs text-muted">
+              {{ auth.siteName }} · 第 {{ (state?.step ?? 0) + 1 }} / {{ state?.total ?? 5 }} 步
+            </p>
+          </div>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          <ThemeToggle />
+          <BaseButton variant="ghost" size="sm" @click="router.push('/')">
+            <template #icon><Icon name="x" :size="14" /></template>
             稍后再配
-          </button>
+          </BaseButton>
         </div>
       </div>
     </header>
 
     <main class="mx-auto max-w-3xl px-4 py-5">
-      <p
-        v-if="fatal"
-        class="mb-3 rounded-control bg-danger/10 px-3 py-2 text-sm text-danger"
-        role="alert"
-      >
-        {{ fatal }}
-      </p>
-      <p
+      <Notice v-if="fatal" tone="danger" class="mb-3">{{ fatal }}</Notice>
+      <!--
+        校验失败时 `errors` 非空 —— 那才是「需要你动手」的信号，用 warning；
+        其余（已跳过 / 解析结果 / 完成）是进展通报，用 info 就够。
+      -->
+      <Notice
         v-if="notice"
-        class="mb-3 rounded-control bg-success/10 px-3 py-2 text-sm text-success"
-        role="status"
+        :tone="Object.keys(errors).length ? 'warning' : 'info'"
+        class="mb-3"
       >
         {{ notice }}
-      </p>
+      </Notice>
 
-      <!-- 步骤条 -->
-      <ol class="mb-4 flex flex-wrap gap-2" aria-label="配置步骤">
-        <li
-          v-for="item in state?.steps ?? []"
-          :key="item.key"
-          class="flex items-center gap-1.5 rounded-control px-2.5 py-1 text-xs"
-          :class="
-            item.index === state?.step
-              ? 'bg-brand/10 text-brand'
-              : item.done
-                ? 'text-success'
-                : 'text-muted'
-          "
-          :aria-current="item.index === state?.step ? 'step' : undefined"
-        >
-          <span aria-hidden="true">{{ item.done ? '✓' : item.index + 1 }}</span>
-          {{ item.title }}
-        </li>
-      </ol>
-
-      <p v-if="loading" class="py-10 text-center text-sm text-muted">正在加载…</p>
-
-      <section v-else-if="step" class="sw-card p-5">
-        <h2 class="text-base font-semibold text-content">{{ step.title }}</h2>
-        <p class="mt-1 text-sm text-muted">{{ step.description }}</p>
-
-        <!-- 学校接入：粘贴地址自动解析 + 连通验证 -->
-        <div v-if="step.key === 'school'" class="mt-4 space-y-3 rounded-card bg-surface p-3">
-          <label class="block">
-            <span class="sw-label">粘贴学校 H5 页面地址（可选，自动填下面几项）</span>
-            <span class="flex gap-2">
-              <input
-                v-model="pastedUrl"
-                class="sw-input"
-                placeholder="https://<学校域名>/...?openid=...&roomId=..."
-                @keyup.enter="parsePasted"
-              />
-              <BaseButton variant="ghost" :loading="parsing" @click="parsePasted">解析</BaseButton>
-            </span>
-            <span class="sw-hint">
-              在微信里打开宿舍电费页面，复制地址栏的完整 URL 粘到这里。
-            </span>
-          </label>
-
-          <div class="flex items-center gap-2">
-            <BaseButton variant="ghost" :loading="parsing" @click="verify">测试连通</BaseButton>
-            <p
-              v-if="verifyResult"
-              class="text-xs"
-              :class="verifyResult.ok ? 'text-success' : 'text-danger'"
-              role="status"
+      <!-- 进度：步骤条 + 细进度条。步骤名只在 ≥768 显示（窄屏放不下 5 个），
+           窄屏靠下面卡片头部的「第 N 步 / 共 5 步」与标题辨认当前位置 -->
+      <nav v-if="state" class="mb-4" aria-label="配置进度">
+        <ol class="flex items-center gap-2">
+          <li
+            v-for="item in state.steps"
+            :key="item.key"
+            class="flex min-w-0 flex-1 items-center gap-2"
+            :aria-current="item.index === state.step ? 'step' : undefined"
+          >
+            <span
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border
+                     text-xs font-medium"
+              :class="
+                item.index === state.step
+                  ? 'border-brand bg-brand text-brand-ink'
+                  : item.done
+                    ? 'border-success/40 bg-success-soft text-success'
+                    : 'border-border bg-elevated text-muted'
+              "
             >
-              {{ verifyResult.ok ? '✅' : '❌' }} {{ verifyResult.text }}
-            </p>
-          </div>
-        </div>
+              <Icon v-if="item.done && item.index !== state.step" name="check" :size="14" />
+              <template v-else>{{ item.index + 1 }}</template>
+            </span>
+            <span
+              class="sr-only sm:not-sr-only sm:min-w-0 sm:truncate sm:text-xs sm:font-medium"
+              :class="item.index === state.step ? 'sm:text-content' : 'sm:text-muted'"
+            >
+              {{ item.title }}
+            </span>
+            <span
+              v-if="item.index < state.total - 1"
+              class="h-px min-w-2 flex-1 bg-border"
+              aria-hidden="true"
+            />
+          </li>
+        </ol>
 
-        <!-- 本步字段：元数据全部来自配置注册表（与配置中心同一套控件） -->
-        <div class="mt-3">
-          <ConfigField
-            v-for="setting in step.settings"
-            :key="setting.key"
-            :setting="setting"
-            :value="valueOf(setting.key)"
-            :error="errors[setting.key]"
-            @update:model-value="(v) => onEdit(setting.key, v)"
+        <div
+          class="mt-3 h-1 overflow-hidden rounded-full bg-border/60"
+          role="progressbar"
+          :aria-valuenow="state.step + 1"
+          aria-valuemin="1"
+          :aria-valuemax="state.total"
+          :aria-label="`配置进度：第 ${state.step + 1} 步，共 ${state.total} 步`"
+        >
+          <div
+            class="h-full rounded-full bg-brand transition-all duration-300"
+            :style="{ width: `${((state.step + 1) / state.total) * 100}%` }"
           />
         </div>
 
-        <!-- 导航 -->
-        <div class="mt-5 flex flex-wrap items-center gap-2">
-          <BaseButton variant="ghost" :disabled="isFirst || busy" @click="move('prev')">
+        <!-- 换步时读屏也能跟上（进度条本身只是个数值，不会自己播报） -->
+        <p class="sr-only" aria-live="polite">
+          当前第 {{ state.step + 1 }} 步，共 {{ state.total }} 步：{{ step?.title ?? '' }}
+        </p>
+      </nav>
+
+      <!-- 首屏骨架：把布局先占住，数据到达时不会整页跳 -->
+      <div v-if="loading" class="sw-card p-5" aria-busy="true">
+        <div class="sw-skeleton h-4 w-32" />
+        <div class="sw-skeleton mt-3 h-3 w-64" />
+        <div class="sw-skeleton mt-6 h-10 w-full" />
+        <div class="sw-skeleton mt-3 h-10 w-full" />
+        <span class="sr-only">正在加载配置向导…</span>
+      </div>
+
+      <section
+        v-else-if="step"
+        :key="step.index"
+        class="sw-card animate-fade-in-up overflow-hidden"
+        aria-labelledby="oobe-step-title"
+      >
+        <header class="border-b border-border px-5 py-4">
+          <p class="text-xs font-medium text-brand">
+            第 {{ step.index + 1 }} 步 / 共 {{ state?.total ?? 5 }} 步
+          </p>
+          <h2 id="oobe-step-title" class="mt-1 text-lg font-semibold text-content">
+            {{ step.title }}
+          </h2>
+          <p class="mt-1 text-sm leading-relaxed text-muted">{{ step.description }}</p>
+        </header>
+
+        <div class="px-5 py-5">
+          <!-- 学校接入：粘贴地址自动解析 + 连通验证 -->
+          <div
+            v-if="step.key === 'school'"
+            class="mb-5 rounded-card border border-dashed border-border-strong bg-surface p-4"
+          >
+            <p class="mb-3 flex items-center gap-1.5 text-xs font-medium text-content">
+              <Icon name="zap" :size="14" class="text-brand" />
+              从学校页面自动填写（可选）
+            </p>
+
+            <!-- Enter 解析：keyup 从输入框冒泡到 BaseField 的根节点 -->
+            <BaseField
+              id="oobe-pasted-url"
+              v-model="pastedUrl"
+              label="粘贴学校 H5 页面地址"
+              placeholder="https://<学校域名>/...?openid=...&roomId=..."
+              hint="在微信里打开宿舍电费页面，复制地址栏的完整 URL 粘到这里。"
+              @keyup.enter="parsePasted"
+            />
+
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <BaseButton variant="ghost" size="sm" :loading="parsing" @click="parsePasted">
+                <template #icon><Icon name="download" :size="14" /></template>
+                解析地址
+              </BaseButton>
+              <BaseButton variant="ghost" size="sm" :loading="parsing" @click="verify">
+                <template #icon><Icon name="activity" :size="14" /></template>
+                测试连通
+              </BaseButton>
+            </div>
+
+            <Notice
+              v-if="verifyResult"
+              class="mt-3"
+              :tone="verifyResult.ok ? 'success' : 'danger'"
+              :icon="verifyResult.ok ? 'check' : 'x'"
+            >
+              {{ verifyResult.text }}
+            </Notice>
+          </div>
+
+          <!-- 本步字段：元数据全部来自配置注册表（与配置中心同一套控件） -->
+          <div>
+            <ConfigField
+              v-for="setting in step.settings"
+              :key="setting.key"
+              :setting="setting"
+              :value="valueOf(setting.key)"
+              :error="errors[setting.key]"
+              @update:model-value="(v) => onEdit(setting.key, v)"
+            />
+          </div>
+        </div>
+
+        <!-- 导航固定在卡片底部：按钮位置不随字段多少上下浮动 -->
+        <footer
+          class="flex flex-wrap items-center gap-2 border-t border-border bg-sunken/60 px-5 py-4"
+        >
+          <BaseButton
+            variant="ghost"
+            class="flex-1 sm:flex-none"
+            :disabled="isFirst || busy"
+            @click="move('prev')"
+          >
+            <template #icon><Icon name="arrowLeft" :size="15" /></template>
             上一步
           </BaseButton>
-          <BaseButton :loading="busy" @click="move('next')">
+          <BaseButton class="flex-1 sm:flex-none" :loading="busy" @click="move('next')">
+            <template #icon>
+              <Icon v-if="!busy" :name="isLast ? 'check' : 'chevronRight'" :size="15" />
+            </template>
             {{ isLast ? '完成' : '下一步' }}
           </BaseButton>
           <BaseButton
@@ -303,10 +408,10 @@ onMounted(load)
           >
             跳过这步
           </BaseButton>
-          <p class="ml-auto text-xs text-muted">
+          <p class="w-full text-xs leading-relaxed text-muted sm:ml-auto sm:w-auto">
             每步都可跳过；所有配置之后都能在「管理 → 配置中心」里改。
           </p>
-        </div>
+        </footer>
       </section>
     </main>
   </div>

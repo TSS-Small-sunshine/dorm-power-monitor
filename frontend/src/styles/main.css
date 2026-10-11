@@ -15,12 +15,22 @@
     font-family: var(--font-sans);
     /* emoji 用自带字体渲染，避免 Linux 上缺字变豆腐块 */
     font-variant-emoji: emoji;
+    @apply bg-surface text-content antialiased;
   }
 
   /* 键盘可达性（Q21 DoD：Tab 走一遍不用鼠标）—— 只在键盘聚焦时显示环 */
   :focus-visible {
     outline: 2px solid rgb(var(--color-brand));
     outline-offset: 2px;
+  }
+
+  /* 数字要能对齐比较（剩余电量、金额、时间戳）—— 表格与统计卡受益最大 */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: rgb(var(--color-brand) / 22%);
   }
 
   /* 尊重系统「减少动态效果」 */
@@ -38,6 +48,16 @@
   /* 卡片：全站唯一表面样式（避免每个页面各写一套圆角/阴影） */
   .sw-card {
     @apply rounded-card border border-border bg-elevated shadow-card;
+  }
+
+  /* 需要「可点/可聚焦」的卡片（列表项、跳转卡）—— 悬停时抬起一档 */
+  .sw-card-interactive {
+    @apply sw-card transition duration-150 hover:-translate-y-px hover:shadow-pop;
+  }
+
+  /* 分区小标题（「站点信息与外观」这类分组头） */
+  .sw-section-title {
+    @apply text-base font-semibold text-content;
   }
 
   /* 输入框：认证界面与配置中心共用 */
@@ -58,5 +78,41 @@
 
   .sw-error {
     @apply mt-1 text-xs text-danger;
+  }
+
+  /* 徽标 / 状态胶囊：一处定义，避免每页自己拼 rounded-full bg-brand/10 */
+  .sw-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1
+           text-xs font-medium leading-none;
+  }
+
+  /* 提示条（陈旧警告 / 刷新结果 / 表单级错误） */
+  .sw-notice {
+    @apply flex items-start gap-2.5 rounded-control border px-3.5 py-2.5 text-sm;
+  }
+
+  /* 骨架屏：内容未到时占位，避免「—」被误读成真实数据 */
+  .sw-skeleton {
+    @apply rounded-control bg-border/60;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(var(--color-elevated) / 70%) 50%,
+      transparent 100%
+    );
+    background-size: 160% 100%;
+    @apply animate-shimmer;
+  }
+
+  /* 细分隔线（配置项之间） */
+  .sw-divider {
+    @apply border-t border-border;
+  }
+}
+
+@layer utilities {
+  /* 顶部工具条：内容滚到下面时仍要看清，但不能是实心白（会切断视觉） */
+  .sw-glass {
+    @apply bg-elevated/85 backdrop-blur-md;
   }
 }

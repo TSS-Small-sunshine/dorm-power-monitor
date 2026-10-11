@@ -4,16 +4,20 @@
  * legacy 用 `localStorage["dorm-power-monitor.section"]` 记住用户在哪一段 ——
  * 刷新页面后不该把他踢回「概览」。这里保持**同一个键名**，这样从旧版升级
  * 上来的用户（浏览器里已经有这个键）不会感觉被重置。
+ *
+ * v2：`icon` 从 emoji 改成 `Icon.vue` 的名字。emoji 的字形由系统字体决定
+ * （Windows 彩色 / Linux 单色），且无法与相邻文字对齐；导航是固定尺寸控件，
+ * 必须用 `currentColor` 描边的 SVG 才能跟着主题色与字号走。
  */
 import { ref, watch } from 'vue'
 
 export type SectionKey = 'overview' | 'history' | 'violations' | 'meter'
 
 export const SECTIONS: { key: SectionKey; label: string; icon: string }[] = [
-  { key: 'overview', label: '概览', icon: '📈' },
-  { key: 'history', label: '历史', icon: '📅' },
-  { key: 'violations', label: '违规', icon: '⚠' },
-  { key: 'meter', label: '电表', icon: '🔌' },
+  { key: 'overview', label: '概览', icon: 'chart' },
+  { key: 'history', label: '历史', icon: 'calendar' },
+  { key: 'violations', label: '违规', icon: 'alert' },
+  { key: 'meter', label: '电表', icon: 'cpu' },
 ]
 
 //: 与 legacy 完全一致的存储键（升级不丢用户习惯）

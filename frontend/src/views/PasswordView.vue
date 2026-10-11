@@ -15,6 +15,15 @@
  * 后端 `starwatt/auth/password.py` 的策略（长度 + 大写 + 数字 + 特殊字符）在
  * 这里用**同一条规则**做前端预校验：只为「少一次往返」，**不替代**后端校验
  * （后端仍然会拒绝弱密码并回中文原因）。
+ *
+ * v2 改动（只动展示层）
+ * ===================
+ *
+ * * 强制改密的黄条与提交结果都走 `Notice`（有图标、有底色，不再是一行裸字）
+ * * 新密码的提示文案随输入变化：合规时换成「已满足强度要求」，让「什么时候
+ *   可以点提交」这件事不用靠猜（判据仍是上面那条 `strengthProblem`）
+ * * 三个框都补了 `id`/`name`/`required`：密码管理器要按 `autocomplete`
+ *   （current-password / new-password）认字段，否则会往新密码框里灌旧密码
  */
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -22,6 +31,7 @@ import { useRouter } from 'vue-router'
 import AuthLayout from '@/components/AuthLayout.vue'
 import BaseButton from '@/components/BaseButton.vue'
 import BaseField from '@/components/BaseField.vue'
+import Notice from '@/components/Notice.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -85,41 +95,54 @@ async function submit(): Promise<void> {
         : '修改后其它设备上的登录会立即失效'
     "
   >
-    <p v-if="forced" class="mb-4 rounded-control bg-warning/10 px-3 py-2 text-xs text-warning">
+    <Notice v-if="forced" tone="warning" icon="shield" class="mb-4">
       初始密码来自安装日志或管理员，属于「临时凭据」—— 换掉它才能继续使用其它功能。
-    </p>
+    </Notice>
 
-    <form class="space-y-4" novalidate @submit.prevent="submit">
+    <form class="space-y-4" novalidate :aria-busy="submitting" @submit.prevent="submit">
       <BaseField
+        id="pwd-current"
         v-model="oldPassword"
+        name="current-password"
         :label="forced ? '当前（初始）密码' : '当前密码'"
         type="password"
         autocomplete="current-password"
+        required
         :disabled="submitting"
         autofocus
       />
 
       <BaseField
+        id="pwd-new"
         v-model="newPassword"
+        name="new-password"
         label="新密码"
         type="password"
         autocomplete="new-password"
-        hint="至少 8 位，含大写字母、数字与特殊字符"
+        :hint="
+          newPassword && !newError
+            ? '已满足强度要求（本地预检，最终以后端校验为准）'
+            : '至少 8 位，含大写字母、数字与特殊字符'
+        "
         :error="newError"
+        required
         :disabled="submitting"
       />
 
       <BaseField
+        id="pwd-confirm"
         v-model="confirm"
+        name="confirm-password"
         label="确认新密码"
         type="password"
         autocomplete="new-password"
         :error="confirmError"
+        required
         :disabled="submitting"
       />
 
-      <p v-if="serverError" class="sw-error" role="alert">{{ serverError }}</p>
-      <p v-else-if="done" class="text-xs text-success" role="status">已修改，正在进入…</p>
+      <Notice v-if="serverError" tone="danger">{{ serverError }}</Notice>
+      <Notice v-else-if="done" tone="success">已修改，正在进入…</Notice>
 
       <BaseButton type="submit" block :loading="submitting" :disabled="!canSubmit">
         {{ submitting ? '提交中…' : '确认修改' }}

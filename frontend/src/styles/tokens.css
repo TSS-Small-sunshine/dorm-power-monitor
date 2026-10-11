@@ -1,8 +1,8 @@
 /**
- * StarWatt 星瓦 · 设计令牌（M5 §5.2）
+ * StarWatt 星瓦 · 设计令牌（M5 §5.2 / UI 改版 v2）
  * ================================
  *
- * 三条规矩
+ * 四条规矩
  * --------
  *
  * 1. **颜色只以「RGB 通道」形式存在**（`22 119 255`，不带 `rgb()`）——
@@ -13,31 +13,49 @@
  *    **不需要重新构建前端**（见 `src/theme.ts`）。
  * 3. **深色模式挂在 `html.dark`**（Tailwind `darkMode: 'class'`），
  *    不是 `prefers-color-scheme` —— 用户要能手动切换并记住选择。
+ * 4. **表面是分层的，不是一种白**：`sunken`（页面底）→ `surface`（分区底）
+ *    → `elevated`（卡片）。旧版只有 surface/elevated 两级，卡片与页面
+ *    对比不足，一整屏看下来「哪里是卡片」要靠边框猜。
+ *
+ * 对比度（改色值前先看这一栏）
+ * ---------------------------
+ * 正文/次要文字与语义色在**浅色底上**都要过 WCAG AA（≥4.5:1）。
+ * 旧版的 `--color-success`(#16A34A, 3.2:1) 与 `--color-warning`(#EA8C0C, 2.6:1)
+ * 都不达标 —— 小字号提示文字（「正常」「数据陈旧」）看不清，这次一并压深。
  *
  * 4 个断点（≤767 / 768–1023 / 1024–1439 / ≥1440）定义在 `tailwind.config.ts`。
  */
 
 :root {
-  /* ---- 品牌色（可被 theme_color 覆盖）---- */
+  /* ---- 品牌色（可被 theme_color 覆盖；ink/strong 由 theme.ts 动态算）---- */
   --color-brand: 22 119 255; /* #1677ff —— 注册表默认值 */
+  --color-brand-strong: 9 88 217; /* 悬停/按下：浅色下压深 */
+  --color-brand-ink: 255 255 255; /* 品牌底上的**可读**前景色 */
   --color-brand-soft: 232 240 254;
 
-  /* ---- 表面 / 文字（浅色）---- */
+  /* ---- 表面层级：sunken < surface < elevated ---- */
+  --color-sunken: 240 242 246;
   --color-surface: 247 248 250;
   --color-elevated: 255 255 255;
   --color-border: 226 229 235;
+  --color-border-strong: 203 209 219;
   --color-content: 23 26 33;
-  --color-muted: 108 116 133;
+  --color-muted: 104 112 130;
 
-  /* ---- 语义色（L1/L2/L4 与表单校验共用）---- */
-  --color-success: 22 163 74;
-  --color-warning: 234 140 12;
-  --color-danger: 220 53 69;
+  /* ---- 语义色（L1/L2/L4 与表单校验共用）+ 各自柔和底 ---- */
+  --color-success: 21 128 61;
+  --color-success-soft: 231 246 236;
+  --color-warning: 190 110 6;
+  --color-warning-soft: 254 245 229;
+  --color-danger: 205 45 60;
+  --color-danger-soft: 253 237 239;
 
   /* ---- 圆角 / 阴影 / 间距 ---- */
-  --radius-card: 14px;
-  --radius-control: 9px;
-  --shadow-card: 0 1px 2px rgb(16 24 40 / 6%), 0 6px 18px rgb(16 24 40 / 6%);
+  --radius-card: 16px;
+  --radius-control: 10px;
+  /* 双层阴影：一层贴边（1px）定轮廓，一层大扩散定悬浮感 —— 单层阴影要么脏要么飘 */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 5%), 0 10px 28px -14px rgb(16 24 40 / 16%);
+  --shadow-pop: 0 2px 6px rgb(16 24 40 / 8%), 0 18px 40px -16px rgb(16 24 40 / 24%);
   --space-gutter: 1.25rem;
 
   /* ---- 字体（仓库自带，无公网依赖）----
@@ -48,20 +66,29 @@
 }
 
 html.dark {
-  --color-brand: 64 150 255;
+  /* 深色下品牌色要提亮、悬停要更亮（浅色下则是压深）—— theme.ts 按主题算 */
+  --color-brand: 77 158 255;
+  --color-brand-strong: 122 184 255;
+  --color-brand-ink: 12 18 28;
   --color-brand-soft: 24 39 66;
 
+  --color-sunken: 12 14 18;
   --color-surface: 17 19 24;
   --color-elevated: 26 29 36;
   --color-border: 45 49 59;
+  --color-border-strong: 66 72 85;
   --color-content: 236 238 242;
-  --color-muted: 150 158 172;
+  --color-muted: 152 160 174;
 
-  --color-success: 56 178 106;
-  --color-warning: 240 168 60;
-  --color-danger: 240 96 108;
+  --color-success: 74 200 122;
+  --color-success-soft: 20 46 32;
+  --color-warning: 245 176 65;
+  --color-warning-soft: 52 40 16;
+  --color-danger: 248 113 125;
+  --color-danger-soft: 56 24 28;
 
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 32%);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 45%), 0 10px 28px -14px rgb(0 0 0 / 55%);
+  --shadow-pop: 0 2px 6px rgb(0 0 0 / 50%), 0 18px 40px -16px rgb(0 0 0 / 65%);
 }
 
 /* 深浅两套都要好看（REQUIREMENTS §596）：表单控件跟随，避免白底黑字突兀 */
